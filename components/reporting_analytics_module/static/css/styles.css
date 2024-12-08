@@ -1,0 +1,53 @@
+# components/reporting_analytics_module/static/css/styles.css
+
+
+# components/reporting_analytics_module/static/css/styles.css
+
+body {
+    font-family: Arial, sans-serif;
+    margin: 20px;
+    line-height: 1.6;
+}
+
+.metrics-section {
+    margin: 20px 0;
+    padding: 15px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+.metric {
+    margin: 10px 0;
+    display: flex;
+    justify-content: space-between;
+}
+
+.metric-label {
+    font-weight: bold;
+    color: #333;
+}
+
+.metric-value {
+    color: #0066cc;
+}
+
+.trades-section {
+    margin: 20px 0;
+}
+
+.trades-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+}
+
+.trades-table th, .trades-table td {
+    border: 1px solid #ddd;
+    padding: 8px;
+    text-align: left;
+}
+
+.trades-table th {
+    background-color: #f5f5f5;
+    font-weight: bold;
+}

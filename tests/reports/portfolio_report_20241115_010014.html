@@ -1,0 +1,88 @@
+# components/reporting_analytics_module/templates/report_template.html
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Portfolio Performance Report</title>
+    <link rel="stylesheet" href="../static/css/styles.css">
+</head>
+<body>
+    <h1>Portfolio Performance Report</h1>
+    
+    <!-- Performance Metrics Section -->
+    <section class="metrics-section">
+        <h2>Performance Metrics</h2>
+        
+        <div class="metric">
+            <span class="metric-label">Total Return:</span>
+            <span class="metric-value">20.50%</span>
+        </div>
+        
+        <div class="metric">
+            <span class="metric-label">Max Drawdown:</span>
+            <span class="metric-value">12.30%</span>
+        </div>
+        
+    </section>
+
+    <!-- Risk Metrics Section -->
+    <section class="metrics-section">
+        <h2>Risk Metrics</h2>
+        
+    </section>
+
+    <!-- Trade History Section -->
+    
+</body>
+</html>
+
+# components/reporting_analytics_module/static/css/styles.css
+
+body {
+    font-family: Arial, sans-serif;
+    margin: 20px;
+    line-height: 1.6;
+}
+
+.metrics-section {
+    margin: 20px 0;
+    padding: 15px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+.metric {
+    margin: 10px 0;
+    display: flex;
+    justify-content: space-between;
+}
+
+.metric-label {
+    font-weight: bold;
+    color: #333;
+}
+
+.metric-value {
+    color: #0066cc;
+}
+
+.trades-section {
+    margin: 20px 0;
+}
+
+.trades-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+}
+
+.trades-table th, .trades-table td {
+    border: 1px solid #ddd;
+    padding: 8px;
+    text-align: left;
+}
+
+.trades-table th {
+    background-color: #f5f5f5;
+    font-weight: bold;
+}

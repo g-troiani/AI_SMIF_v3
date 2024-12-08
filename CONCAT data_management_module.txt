@@ -1,0 +1,1652 @@
+# Module: components/data_management_module
+
+# File: components/data_management_module/__init__.py
+# Type: py
+
+
+
+# File: components/data_management_module/alpaca_api.py
+# Type: py
+
+import logging
+import time
+import requests
+from datetime import datetime, timedelta
+import pandas as pd
+import pytz
+from alpaca_trade_api.rest import REST, TimeFrame, TimeFrameUnit
+from .config import config
+class AlpacaAPIClient:
+    """Client for interacting with Alpaca's REST API"""
+    
+    def __init__(self):
+        self.logger = self._setup_logging()
+        self.base_url = config.get('api', 'base_url')
+        self.headers = {
+            'APCA-API-KEY-ID': config.get('api', 'key_id'),
+            'APCA-API-SECRET-KEY': config.get('api', 'secret_key')
+        }
+        # Instantiate the REST API client
+        self.api = REST(
+            key_id=config.get('api', 'key_id'),
+            secret_key=config.get('api', 'secret_key'),
+            base_url=config.get('api', 'base_url')
+        )
+        # Rate limiting settings
+        self.retry_count = config.get_int('api', 'rate_limit_retry_attempts')
+        self.retry_delay = config.get_int('api', 'rate_limit_retry_wait')
+        self.rate_limit_delay = config.get_float('api', 'rate_limit_delay')
+        self._last_request_time = 0
+        
+        # Add chunk size for data fetching
+        self.chunk_size = 15  # Number of days per chunk
+
+
+    def _setup_logging(self):
+        """Set up logging for the API client"""
+        logger = logging.getLogger('alpaca_api')
+        logger.setLevel(logging.INFO)
+        handler = logging.FileHandler(config.get('DEFAULT', 'log_file'))
+        handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        logger.addHandler(handler)
+        return logger
+
+    def _respect_rate_limit(self):
+        """Implement rate limiting to avoid API throttling"""
+        now = time.time()
+        time_since_last = now - self._last_request_time
+        if time_since_last < self.rate_limit_delay:
+            sleep_time = self.rate_limit_delay - time_since_last
+            time.sleep(sleep_time)
+        self._last_request_time = time.time()
+
+
+    def fetch_historical_data(self, ticker, start_date, end_date, timeframe='1Min'):
+        """Fetch historical data with proper formatting"""
+        all_data = []
+        current_date = start_date
+        chunk_count = 0
+
+        while current_date < end_date:
+            chunk_end = min(current_date + timedelta(days=self.chunk_size), end_date)
+            chunk_count += 1
+            print(f"CRITICAL DEBUG: Fetching chunk {chunk_count}: {current_date} to {chunk_end}")
+            chunk_data = self._fetch_data_chunk(ticker, current_date, chunk_end, timeframe)
+
+            if not chunk_data.empty:
+                print(f"CRITICAL DEBUG: Retrieved {len(chunk_data)} records in chunk {chunk_count}")
+                all_data.append(chunk_data)
+            else:
+                print(f"CRITICAL DEBUG: No data retrieved in chunk {chunk_count}")
+
+            current_date = chunk_end + timedelta(seconds=1)  # Avoid overlapping
+
+        if all_data:
+            final_data = pd.concat(all_data)
+        else:
+            final_data = pd.DataFrame()
+
+        print(f"CRITICAL DEBUG: Final data shape={final_data.shape}, columns={final_data.columns.tolist()}")
+        if not final_data.empty:
+            earliest_date = final_data.index.min()
+            latest_date = final_data.index.max()
+            print(f"CRITICAL DEBUG: Data ranges from {earliest_date} to {latest_date}")
+
+        return final_data
+    
+    
+    def _fetch_data_chunk(self, ticker, start_date, end_date, timeframe):
+        for attempt in range(self.retry_count):
+            try:
+                self._respect_rate_limit()
+                
+                # TimeFrame mapping
+                timeframe_map = {
+                    '1Min': TimeFrame(1, TimeFrameUnit.Minute),
+                    '5Min': TimeFrame(5, TimeFrameUnit.Minute),
+                    '15Min': TimeFrame(15, TimeFrameUnit.Minute),
+                    '1Hour': TimeFrame(1, TimeFrameUnit.Hour),
+                    '1Day': TimeFrame(1, TimeFrameUnit.Day)
+                }
+                tf = timeframe_map.get(timeframe)
+                if tf is None:
+                    raise ValueError(f"Invalid timeframe: {timeframe}")
+                
+                bars = self.api.get_bars(
+                    ticker,
+                    timeframe=tf,
+                    start=start_date.isoformat(),
+                    end=end_date.isoformat(),
+                    adjustment='raw',
+                    limit=10000  # Max limit per request
+                ).df
+
+                if bars.empty:
+                    self.logger.warning(f"No data returned for {ticker} between {start_date} and {end_date}")
+                    print(f"CRITICAL DEBUG: No data returned for {ticker} between {start_date} and {end_date}")
+                    return pd.DataFrame()
+
+                # Ensure the index is a DateTimeIndex
+                if not isinstance(bars.index, pd.DatetimeIndex):
+                    bars.index = pd.to_datetime(bars.index)
+                bars = bars.sort_index()
+
+                # Rename columns if necessary
+                # Example: If columns are ['o', 'h', 'l', 'c', 'v'], rename them
+                expected_columns = ['open', 'high', 'low', 'close', 'volume']
+                if set(['o', 'h', 'l', 'c', 'v']).issubset(bars.columns):
+                    bars.rename(columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'}, inplace=True)
+
+                # Convert timezone and filter market hours
+                ny_tz = pytz.timezone('America/New_York')
+                bars.index = bars.index.tz_convert(ny_tz)
+                bars = bars.between_time('09:30', '16:00')
+
+                self.logger.info(f"Successfully fetched {len(bars)} bars for {ticker} from {start_date} to {end_date}")
+                print(f"CRITICAL DEBUG: Successfully fetched {len(bars)} bars for {ticker} from {start_date} to {end_date}")
+                return bars
+
+            except Exception as e:
+                self.logger.warning(f"Attempt {attempt + 1} failed for {ticker}: {str(e)}")
+                print(f"CRITICAL DEBUG: Attempt {attempt + 1} failed for {ticker}: {str(e)}")
+                if attempt == self.retry_count - 1:
+                    self.logger.error(f"Failed to fetch data for {ticker} after {self.retry_count} attempts")
+                    print(f"CRITICAL DEBUG: Failed to fetch data for {ticker} after {self.retry_count} attempts")
+                    raise
+                time.sleep(self.retry_delay * (attempt + 1))  # Exponential backoff
+
+
+
+    def verify_api_access(self):
+        """Verify API credentials and access"""
+        try:
+            clock = self.api.get_clock()
+            if clock:
+                self.logger.info("API access verified successfully")
+                return True
+            else:
+                self.logger.error("API access verification failed")
+                return False
+        except Exception as e:
+            self.logger.error(f"API access verification failed: {str(e)}")
+            return False
+
+    def get_bars(self, ticker, start_date, end_date):
+        """Get historical bars for a ticker"""
+        try:
+            self.logger.info(f"Requesting bars for {ticker} from {start_date} to {end_date}")
+            
+            bars = self.api.get_bars(
+                ticker,
+                TimeFrame(1, TimeFrame.Unit.Minute),
+                start=start_date.isoformat(),
+                end=end_date.isoformat(),
+                adjustment='raw'
+            ).df
+
+            if bars.empty:
+                self.logger.warning(f"No data returned for {ticker} between {start_date} and {end_date}")
+                return pd.DataFrame()
+
+            self.logger.info(f"Successfully fetched {len(bars)} bars for {ticker}")
+            return bars
+
+        except Exception as e:
+            self.logger.error(f"Error fetching bars: {str(e)}")
+            raise
+
+    def _get_bars_for_date(self, ticker, date):
+        """Get bars for a specific date"""
+        try:
+            start_date = datetime.combine(date, datetime.min.time())
+            end_date = datetime.combine(date, datetime.max.time())
+            bars = self.get_bars(ticker, start_date, end_date)
+            if not bars.empty:
+                self.logger.info(f"Fetched {len(bars)} bars for {ticker} on {date.strftime('%Y-%m-%d')}")
+            return bars
+        except Exception as e:
+            self.logger.error(f"Error fetching bars for {date}: {str(e)}")
+            return pd.DataFrame()
+
+
+# File: components/data_management_module/config.py
+# Type: py
+
+# components/data_management_module/config.py
+
+import os
+from configparser import ConfigParser
+from pathlib import Path
+
+class DataConfig:
+    def __init__(self):
+        self.config = ConfigParser()
+        
+        # Define base paths
+        self.project_root = Path(__file__).parent.parent.parent
+        self.data_dir = self.project_root / 'data'
+        self.log_dir = self.project_root / 'logs'
+        
+        # Create directories if they don't exist
+        self.data_dir.mkdir(exist_ok=True)
+        self.log_dir.mkdir(exist_ok=True)
+        
+        self.load_config()
+
+    def load_config(self):
+        """Load configuration from config file and environment variables"""
+        # Default settings
+        self.config['DEFAULT'] = {
+            'database_path': str(self.data_dir / 'market_data.db'),
+            'tickers_file': str(self.project_root / 'tickers.csv'),
+            'log_file': str(self.log_dir / 'data_manager.log'),
+            'historical_data_years': '5',
+            'data_frequency_minutes': '5',
+            'batch_size': '1000',
+            'zeromq_port': '5555',
+            'zeromq_topic': 'market_data'
+        }
+
+        # Data API settings
+        self.config['api'] = {
+            'base_url': 'https://data.alpaca.markets/v2',
+            'key_id': os.getenv('APCA_API_KEY_ID', ''),
+            'secret_key': os.getenv('APCA_API_SECRET_KEY', ''),
+            'rate_limit_retry_attempts': '3',
+            'rate_limit_retry_wait': '5',
+            'rate_limit_delay': '0.2'
+        }
+
+        # Validate required settings
+        self._validate_config()
+
+    def _validate_config(self):
+        """Validate critical configuration settings"""
+        if not self.config['api']['key_id'] or not self.config['api']['secret_key']:
+            raise ValueError("Alpaca API credentials not found in environment variables")
+
+    def get(self, section, key):
+        """Get a configuration value"""
+        return self.config.get(section, key)
+
+    def get_int(self, section, key):
+        """Get an integer configuration value"""
+        return self.config.getint(section, key)
+
+    def get_float(self, section, key):
+        """Get a float configuration value"""
+        return self.config.getfloat(section, key)
+
+# Global config instance
+config = DataConfig()
+
+# File: components/data_management_module/data_access_layer.py
+# Type: py
+
+# components/data_management_module/data_access_layer.py
+
+from sqlalchemy import create_engine, Column, String, Integer, Float, DateTime, ForeignKey, UniqueConstraint, func, text
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
+from datetime import datetime, timedelta
+import logging
+from .config import config
+
+Base = declarative_base()
+
+class Ticker(Base):
+    __tablename__ = 'tickers'
+    symbol = Column(String, primary_key=True)
+    last_updated = Column(DateTime, default=datetime.utcnow)
+    added_date = Column(DateTime, default=datetime.utcnow)
+
+class HistoricalData(Base):
+    __tablename__ = 'historical_data'
+    id = Column(Integer, primary_key=True)
+    ticker_symbol = Column(String, ForeignKey('tickers.symbol'))
+    timestamp = Column(DateTime(timezone=True), nullable=False)
+    open = Column(Float, nullable=False)
+    high = Column(Float, nullable=False)
+    low = Column(Float, nullable=False)
+    close = Column(Float, nullable=False)
+    volume = Column(Integer, nullable=False)
+
+    # Ensure we don't have duplicate data points
+    __table_args__ = (UniqueConstraint('ticker_symbol', 'timestamp'),)
+
+    @staticmethod
+    def validate_price_data(open, high, low, close, volume):
+        """Validate price data before insertion"""
+        if not all(isinstance(x, (int, float)) for x in [open, high, low, close, volume]):
+            raise ValueError("All price and volume data must be numeric")
+        if not (high >= max(open, close) and low <= min(open, close)):
+            raise ValueError("High/low prices are inconsistent with open/close prices")
+        if volume < 0:
+            raise ValueError("Volume cannot be negative")
+        return True
+
+class DatabaseManager:
+    def __init__(self):
+        self.engine = create_engine(
+            f"sqlite:///{config.get('DEFAULT', 'database_path')}",
+            connect_args={'check_same_thread': False, 'timeout': 15}  # Added parameters
+        )
+        # Optionally set journal mode to WAL to improve concurrency
+        with self.engine.connect() as conn:
+            conn.execute(text('PRAGMA journal_mode=WAL;'))
+        Base.metadata.create_all(self.engine)
+        self.Session = sessionmaker(bind=self.engine)
+        self._setup_logging()
+
+    def _setup_logging(self):
+        self.logger = logging.getLogger('database_manager')
+        self.logger.setLevel(logging.INFO)
+        handler = logging.FileHandler(config.get('DEFAULT', 'log_file'))
+        handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        self.logger.addHandler(handler)
+
+    def add_ticker(self, symbol):
+        """Add a new ticker to the database"""
+        session = self.Session()
+        try:
+            ticker = Ticker(symbol=symbol)
+            session.add(ticker)
+            session.commit()
+            self.logger.info(f"Added new ticker: {symbol}")
+        except SQLAlchemyError as e:
+            session.rollback()
+            self.logger.error(f"Error adding ticker {symbol}: {str(e)}")
+            raise
+        finally:
+            session.close()
+
+    def bulk_insert_historical_data(self, records):
+        """Insert multiple historical data records"""
+        session = self.Session()
+        try:
+            session.bulk_save_objects(records)
+            session.commit()
+            self.logger.info(f"Bulk inserted {len(records)} records")
+        except SQLAlchemyError as e:
+            session.rollback()
+            self.logger.error(f"Error in bulk insert: {str(e)}")
+            raise
+        finally:
+            session.close()
+
+    def get_historical_data(self, ticker, start_date, end_date):
+        """Retrieve historical data for a specific ticker and date range"""
+        session = self.Session()
+        try:
+            query = session.query(HistoricalData).filter(
+                HistoricalData.ticker_symbol == ticker,
+                HistoricalData.timestamp.between(start_date, end_date)
+            ).order_by(HistoricalData.timestamp)
+            return query.all()
+        finally:
+            session.close()
+
+    def cleanup_old_data(self, days_to_keep=30):
+        """Cleanup historical data older than specified days"""
+        session = self.Session()
+        try:
+            cutoff_date = datetime.utcnow() - timedelta(days=days_to_keep)
+            deleted = session.query(HistoricalData).filter(
+                HistoricalData.timestamp < cutoff_date
+            ).delete()
+            session.commit()
+            if deleted > 0:
+                session.execute(text('VACUUM'))  # Defragment the database
+            self.logger.info(f"Cleaned up {deleted} old records")
+        except SQLAlchemyError as e:
+            session.rollback()
+            self.logger.error(f"Error during cleanup: {str(e)}")
+            raise
+        finally:
+            session.close()
+
+    def create_session(self):
+        """Create and return a new database session"""
+        try:
+            session = self.Session()
+            return session
+        except Exception as e:
+            self.logger.error(f"Error creating database session: {str(e)}")
+            raise
+        
+    def save_real_time_data(self, bar):
+        """Save real-time streamed data as appended records to the database"""
+        session = self.Session()
+        try:
+            # Validate the data
+            HistoricalData.validate_price_data(
+                bar.open, bar.high, bar.low, bar.close, bar.volume
+            )
+
+            # Create a new HistoricalData record
+            data = HistoricalData(
+                ticker_symbol=bar.symbol,
+                timestamp=bar.timestamp,
+                open=bar.open,
+                high=bar.high,
+                low=bar.low,
+                close=bar.close,
+                volume=bar.volume
+            )
+
+            # Add and commit the new record
+            session.add(data)
+            session.commit()
+            self.logger.info(f"Appended real-time data for {bar.symbol} at {bar.timestamp} to the database")
+        except IntegrityError as ie:
+            session.rollback()
+            self.logger.warning(f"Data for {bar.symbol} at {bar.timestamp} already exists in the database.")
+        except SQLAlchemyError as e:
+            session.rollback()
+            self.logger.error(f"Error saving real-time data: {str(e)}")
+            raise
+        finally:
+            session.close()
+            
+    def get_last_timestamp(self, ticker_symbol):
+        """Get the timestamp of the last record for a ticker in the database."""
+        session = self.Session()
+        try:
+            last_record = session.query(HistoricalData.timestamp)\
+                .filter(HistoricalData.ticker_symbol == ticker_symbol)\
+                .order_by(HistoricalData.timestamp.desc())\
+                .first()
+            if last_record:
+                return last_record[0]
+            else:
+                return None
+        except Exception as e:
+            self.logger.error(f"Error getting last timestamp for {ticker_symbol}: {str(e)}")
+            raise
+        finally:
+            session.close()
+
+# Global database manager instance
+db_manager = DatabaseManager()
+
+
+# File: components/data_management_module/data_manager.py
+# Type: py
+
+# components/data_management_module/data_manager.py
+
+import pandas as pd
+import threading
+import logging
+from datetime import datetime, timedelta, time
+import time as time_module  # to avoid conflict with datetime.time
+from pathlib import Path
+from .config import config
+from .alpaca_api import AlpacaAPIClient
+from .data_access_layer import db_manager, Ticker, HistoricalData
+from .real_time_data import RealTimeDataStreamer
+import pytz
+from dateutil.relativedelta import relativedelta  # for accurate date calculations
+from sqlalchemy.exc import IntegrityError        # for handling database integrity errors
+import traceback         
+from datetime import datetime, timedelta
+import threading
+import json
+from zmq.error import ZMQError
+import zmq
+from .utils import append_ticker_to_csv
+
+
+class DataManager:
+    """Main class for managing market data operations"""
+
+    def __init__(self):
+        self.logger = self._setup_logging()
+        self.db_manager = db_manager 
+        self.api_client = AlpacaAPIClient()
+        self.lock = threading.RLock()
+        self.load_tickers()
+        self.real_time_streamer = None
+        self.logger.info("DataManager initialized.")
+        self._last_maintenance = None
+        self._running = True        # for clean shutdown
+        self._setup_command_socket() # set up command handling first
+        self.initialize_database()         # Then initialize other components
+        self.start_real_time_streaming()        # Then initialize other components
+        self.logger.info("DataManager initialized.")        # for clean shutdown
+
+    def _setup_logging(self):
+        """Set up logging for the data manager"""
+        logger = logging.getLogger('data_manager')
+        logger.setLevel(logging.INFO)
+        handler = logging.FileHandler(config.get('DEFAULT', 'log_file'))
+        handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        logger.addHandler(handler)
+        return logger
+    
+    def load_tickers(self):
+        """Load tickers from the tickers file."""
+        tickers_file = Path(config.get('DEFAULT', 'tickers_file'))
+        if not tickers_file.exists():
+            self.logger.error(f"Tickers file not found: {tickers_file}")
+            raise FileNotFoundError(f"Tickers file not found: {tickers_file}")
+        
+        with open(tickers_file, 'r') as f:
+            self.tickers = [line.strip() for line in f if line.strip()]
+        self.logger.info(f"Loaded {len(self.tickers)} tickers: {self.tickers}")
+
+
+    def _save_historical_data(self, ticker, df):
+        """Store historical data in the database"""
+        with self.lock:
+            session = db_manager.Session()
+            try:
+                records = []
+                for index, row in df.iterrows():
+                    try:
+                        # Updated column names to match DataFrame
+                        HistoricalData.validate_price_data(
+                            row['open'], row['high'], row['low'], row['close'], row['volume']
+                        )
+                        record = HistoricalData(
+                            ticker_symbol=ticker,
+                            timestamp=index,
+                            open=row['open'],
+                            high=row['high'],
+                            low=row['low'],
+                            close=row['close'],
+                            volume=row['volume']
+                        )
+                        records.append(record)
+                    except ValueError as e:
+                        self.logger.warning(f"Skipping invalid data point for {ticker}: {str(e)}")
+                        print(f"CRITICAL DEBUG: Skipping invalid data point for {ticker}: {str(e)}")
+
+                if records:
+                    batch_size = config.get_int('DEFAULT', 'batch_size')  # Use batch_size from config
+                    num_records = len(records)
+                    print(f"CRITICAL DEBUG: Attempting to save {num_records} records for {ticker}")
+
+                    for i in range(0, num_records, batch_size):
+                        batch = records[i:i+batch_size]
+                        try:
+                            session.bulk_save_objects(batch)
+                            session.commit()
+                            print(f"CRITICAL DEBUG: Successfully saved batch {i//batch_size +1} with {len(batch)} records")
+                        except IntegrityError as ie:
+                            session.rollback()
+                            self.logger.warning(f"IntegrityError when saving batch {i//batch_size +1} for {ticker}: {str(ie)}")
+                            print(f"CRITICAL DEBUG: IntegrityError when saving batch {i//batch_size +1} for {ticker}: {str(ie)}")
+                        except Exception as e:
+                            session.rollback()
+                            self.logger.error(f"Exception when saving batch {i//batch_size +1} for {ticker}: {str(e)}")
+                            print(f"CRITICAL DEBUG: Exception when saving batch {i//batch_size +1} for {ticker}: {str(e)}")
+                            traceback.print_exc()
+                            raise
+
+                self.logger.info(f"Stored {len(records)} records for {ticker}")
+                print(f"CRITICAL DEBUG: Stored {len(records)} records for {ticker}")
+                    
+            except Exception as e:
+                session.rollback()
+                self.logger.error(f"Database error for {ticker}: {str(e)}")
+                print(f"CRITICAL DEBUG: Database error for {ticker}: {str(e)}")
+                raise
+            finally:
+                session.close()
+                print("CRITICAL DEBUG: Database session closed.")
+
+                    
+    def _filter_market_hours(self, data, timezone):
+        """Filter data to only include market hours (9:30 AM to 4:00 PM EST)"""
+        market_open = time(9, 30)    # Corrected from datetime_time(9, 30)
+        market_close = time(16, 0)   # Corrected from datetime_time(16, 0)
+        data = data.tz_convert(timezone)
+        data = data.between_time(market_open, market_close)
+        return data
+        
+    def fetch_historical_data_async(self, ticker_symbol):
+        """Fetch historical data for a ticker asynchronously."""
+        threading.Thread(target=self.fetch_historical_data_for_ticker, args=(ticker_symbol,)).start()
+
+    def start_real_time_streaming(self):
+        """Start real-time data streaming"""
+        if not self.real_time_streamer:
+            self.logger.info("Starting real-time data streaming")
+            try:
+                self.real_time_streamer = RealTimeDataStreamer(self.tickers)
+                # Start the streamer in a separate thread to make it non-blocking
+                threading.Thread(target=self.real_time_streamer.start, daemon=True).start()
+                self.logger.info("Real-time streaming started successfully")
+            except Exception as e:
+                self.logger.error(f"Failed to start real-time streaming: {str(e)}")
+                raise
+        else:
+            self.logger.warning("Real-time streamer is already running")
+
+    def stop_real_time_streaming(self):
+        """Stop real-time data streaming"""
+        if self.real_time_streamer:
+            try:
+                self.real_time_streamer.stop()
+                self.real_time_streamer = None
+                self.logger.info("Stopped real-time data streaming")
+            except Exception as e:
+                self.logger.error(f"Error stopping real-time stream: {str(e)}")
+                raise
+
+    def perform_maintenance(self):
+        """Perform database maintenance"""
+        try:
+            current_time = datetime.now()
+            if (self._last_maintenance is None or 
+                (current_time - self._last_maintenance).total_seconds() > 86400):
+                
+                # Disable the cleanup to retain all data
+                # db_manager.cleanup_old_data()
+                
+                # Verify data continuity for all tickers
+                for ticker in self.tickers:
+                    self.verify_data_continuity(ticker)
+                
+                self._last_maintenance = current_time
+                self.logger.info("Performed maintenance without data cleanup")
+        except Exception as e:
+            self.logger.error(f"Error during maintenance: {str(e)}")
+            raise
+
+
+    def get_historical_data(self, ticker, start_date, end_date):
+        """Retrieve historical data for a specific ticker and date range"""
+        try:
+            data = db_manager.get_historical_data(ticker, start_date, end_date)
+            if not data:
+                self.logger.error(f"No data found for {ticker} between {start_date} and {end_date}")
+            return data
+        except Exception as e:
+            self.logger.error(f"Error retrieving historical data: {str(e)}")
+            raise
+
+    def _setup_command_socket(self):
+        """Setup ZeroMQ socket for receiving commands"""
+        try:
+            # Add timestamp for precise timing of events
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+            startup_msg = f"{current_time} - Starting command socket initialization..."
+            self.logger.info(startup_msg)
+            print(startup_msg)  # Print to console as well
+            
+            # Create new ZMQ context
+            self.command_context = zmq.Context.instance()  # Using singleton instance
+            print("DEBUG: Created ZMQ context")
+            
+            # Create and configure socket
+            self.command_socket = self.command_context.socket(zmq.REP)
+            print("DEBUG: Created REP socket")
+            
+            # Set socket options for better diagnostics
+            self.command_socket.setsockopt(zmq.LINGER, 1000)
+            self.command_socket.setsockopt(zmq.RCVTIMEO, 1000)
+            self.command_socket.setsockopt(zmq.SNDTIMEO, 1000)
+            self.command_socket.setsockopt(zmq.IMMEDIATE, 1)
+            self.command_socket.setsockopt(zmq.IPV6, 0)  # Disable IPv6
+            print("DEBUG: Socket options set")
+            
+            # Try to bind
+            bind_addr = "tcp://*:5556"  # Bind to all interfaces
+            bind_msg = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')} - Attempting to bind to {bind_addr}"
+            self.logger.info(bind_msg)
+            print(bind_msg)
+            
+            print(f"DEBUG: About to bind socket...")
+            self.command_socket.bind(bind_addr)
+            print(f"DEBUG: Socket bound successfully")
+            
+            # Start command handler thread
+            self._running = True  # Ensure this is set before starting thread
+            self.command_thread = threading.Thread(
+                target=self._handle_commands,
+                daemon=True,
+                name="CommandHandler"
+            )
+            print("DEBUG: Created command handler thread")
+            self.command_thread.start()
+            print("DEBUG: Command handler thread started")
+            
+            # Verify thread started
+            if self.command_thread.is_alive():
+                success_msg = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')} - Command socket initialized and handler thread started"
+                self.logger.info(success_msg)
+                print(success_msg)
+            else:
+                raise RuntimeError("Command handler thread failed to start")
+                    
+        except zmq.error.ZMQError as e:
+            error_msg = f"ZMQ Error during command socket setup: {str(e)}"
+            self.logger.error(error_msg)
+            print(error_msg)
+            if hasattr(self, 'command_socket'):
+                try:
+                    self.command_socket.close()
+                except Exception as close_error:
+                    self.logger.error(f"Error closing command socket: {str(close_error)}")
+            if hasattr(self, 'command_context'):
+                try:
+                    self.command_context.term()
+                except Exception as term_error:
+                    self.logger.error(f"Error terminating context: {str(term_error)}")
+            raise
+            
+        except Exception as e:
+            error_msg = f"Unexpected error in command socket setup: {str(e)}"
+            self.logger.error(error_msg)
+            print(error_msg)
+            if hasattr(self, 'command_socket'):
+                try:
+                    self.command_socket.close()
+                except Exception as close_error:
+                    self.logger.error(f"Error closing command socket: {str(close_error)}")
+            if hasattr(self, 'command_context'):
+                try:
+                    self.command_context.term()
+                except Exception as term_error:
+                    self.logger.error(f"Error terminating context: {str(term_error)}")
+            raise
+        
+    def _cleanup_command_socket(self):
+        """Clean up command socket resources"""
+        try:
+            if hasattr(self, 'command_socket'):
+                try:
+                    self.command_socket.close()
+                    self.logger.info("Command socket closed")
+                except Exception as e:
+                    self.logger.error(f"Error closing command socket: {str(e)}")
+
+            if hasattr(self, 'command_context'):
+                try:
+                    if isinstance(self.command_context, zmq.Context):
+                        self.command_context.term()
+                        self.logger.info("ZMQ context terminated")
+                except Exception as e:
+                    self.logger.error(f"Error terminating ZMQ context: {str(e)}")
+
+            # Wait for command thread to finish if it exists
+            if hasattr(self, 'command_thread'):
+                try:
+                    if self.command_thread.is_alive():
+                        self._running = False  # Signal thread to stop
+                        self.command_thread.join(timeout=5)
+                        if self.command_thread.is_alive():
+                            self.logger.warning("Command thread did not terminate cleanly")
+                        else:
+                            self.logger.info("Command thread terminated")
+                except Exception as e:
+                    self.logger.error(f"Error joining command thread: {str(e)}")
+
+        except Exception as e:
+            self.logger.error(f"Error during command socket cleanup: {str(e)}")
+            raise
+
+    def _handle_commands(self):
+        """Handle incoming commands"""
+        print("DEBUG: Command handler thread starting...")  # Debug print
+
+        # Set up a poller
+        poller = zmq.Poller()
+        poller.register(self.command_socket, zmq.POLLIN)
+
+        while self._running:
+            try:
+                print("DEBUG: Waiting for command...")  # Debug print
+
+                # Poll the socket for incoming messages
+                socks = dict(poller.poll(1000))  # Wait for 1 second
+                if self.command_socket in socks and socks[self.command_socket] == zmq.POLLIN:
+                    print("DEBUG: Poll returned activity, attempting to receive...")  # Debug print
+                    try:
+                        # Receive the command
+                        command = self.command_socket.recv_json()
+                        print(f"DEBUG: Received command: {command}")  # Debug print
+
+                        response = {'success': False, 'message': ''}
+
+                        if command['type'] == 'add_ticker':
+                            ticker = command.get('ticker')
+                            if ticker:
+                                success = self.add_new_ticker(ticker)
+                                response = {
+                                    'success': success,
+                                    'message': f"Ticker {ticker} {'added successfully' if success else 'failed to add'}"
+                                }
+                            else:
+                                response = {'success': False, 'message': 'No ticker provided'}
+                        else:
+                            response = {'success': False, 'message': 'Unknown command type'}
+
+                        print(f"DEBUG: Sending response: {response}")  # Added debug print
+                        self.command_socket.send_json(response)
+                        self.logger.info(f"Sent response: {response}")
+
+                    except Exception as e:
+                        error_msg = f"Error processing command: {e}"
+                        self.logger.error(error_msg)
+                        print(f"DEBUG: {error_msg}")  # Added debug print
+                        # Attempt to send an error response
+                        try:
+                            self.command_socket.send_json({
+                                'success': False,
+                                'message': f"Error processing command: {str(e)}"
+                            })
+                        except Exception as send_error:
+                            self.logger.error(f"Failed to send error response: {send_error}")
+                        continue  # Keep the thread running
+                else:
+                    # No message received, continue waiting
+                    continue
+
+            except Exception as e:
+                error_msg = f"Unexpected error in command handler: {e}"
+                self.logger.error(error_msg)
+                print(f"DEBUG: {error_msg}")  # Added debug print
+                # Sleep briefly to avoid tight loop in case of persistent error
+                time.sleep(1)
+                continue  # Keep the thread running
+
+    def reload_tickers(self):
+            """Reload tickers from the tickers file dynamically."""
+            with self.lock:
+                self.load_tickers()
+                print("Tickers reloaded.")
+
+                
+                
+    def shutdown(self):
+        """Cleanly shutdown the DataManager"""
+        self._running = False
+        try:
+            # Stop real-time streaming
+            self.stop_real_time_streaming()
+            
+            # Cleanup command socket resources
+            if hasattr(self, 'command_socket'):
+                try:
+                    self.command_socket.close()
+                except Exception as e:
+                    self.logger.error(f"Error closing command socket: {str(e)}")
+                    
+            if hasattr(self, 'command_context'):
+                try:
+                    self.command_context.term()
+                except Exception as e:
+                    self.logger.error(f"Error terminating ZMQ context: {str(e)}")
+                    
+            # Wait for command thread to finish if it exists
+            if hasattr(self, 'command_thread'):
+                try:
+                    if self.command_thread.is_alive():
+                        self.command_thread.join(timeout=5)
+                except Exception as e:
+                    self.logger.error(f"Error joining command thread: {str(e)}")
+                    
+            self.logger.info("DataManager shutdown complete")
+        except Exception as e:
+            self.logger.error(f"Error during shutdown: {str(e)}")
+
+    def __del__(self):
+        """Cleanup when the object is destroyed"""
+        try:
+            self.stop_real_time_streaming()
+        except Exception as e:
+            self.logger.error(f"Error during cleanup: {str(e)}")
+
+
+    def get_backtrader_data(self, ticker, start_date, end_date):
+        """
+        Retrieves historical data in a format compatible with Backtrader.
+
+        :param ticker: Stock ticker symbol.
+        :param start_date: Start date as a datetime object.
+        :param end_date: End date as a datetime object.
+        :return: Pandas DataFrame with necessary columns.
+        """
+        try:
+            # Get historical data
+            data = self.get_historical_data(ticker, start_date, end_date)
+            
+            # Convert to DataFrame if we get a list
+            if isinstance(data, list):
+                df = pd.DataFrame(data)
+            else:
+                df = data
+                
+            # Check if we have data
+            if df is None or (isinstance(df, pd.DataFrame) and df.empty):
+                raise ValueError(f"No data found for ticker {ticker} between {start_date} and {end_date}")
+                
+            # Select and rename columns
+            if isinstance(df, pd.DataFrame):
+                df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
+                df.rename(columns={'timestamp': 'datetime'}, inplace=True)
+                df.set_index('datetime', inplace=True)
+                df.index = pd.to_datetime(df.index)
+                
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Error retrieving backtrader data for {ticker}: {str(e)}")
+            # Return empty DataFrame instead of raising to maintain compatibility
+            return pd.DataFrame()
+
+    def _fetch_historical_data(self, ticker):
+        """Fetch historical data for a ticker"""
+        try:
+            end_date = datetime.now(pytz.timezone('US/Eastern'))
+            start_date = end_date - timedelta(days=5*365)  # 5 years
+            
+            self.logger.info(f"Fetching data for {ticker}")
+            data = self.alpaca_client.fetch_historical_data(
+                ticker,
+                start_date,
+                end_date,
+                timeframe='1Day'
+            )
+            
+            if not data.empty:
+                self.logger.info(f"Storing {len(data)} records for {ticker}")
+                self._save_historical_data(ticker, data)
+                self.logger.info(f"Successfully stored data for {ticker}")
+            else:
+                self.logger.warning(f"No data received for {ticker}")
+                
+            return data
+        except Exception as e:
+            self.logger.error(f"Error in fetch_historical_data for {ticker}: {e}")
+            raise
+        
+    def fetch_historical_data_for_ticker(self, ticker_symbol):
+        """Fetch and store historical data for a single ticker."""
+        try:
+            with self.lock:
+                ny_tz = pytz.timezone('America/New_York')
+                end_date = datetime.now(ny_tz)
+                
+                # Get the last record timestamp
+                last_timestamp = self.get_last_record_timestamp(ticker_symbol)
+                
+                if last_timestamp:
+                    # If we have data, start from the last record
+                    # Add a small buffer (1 bar) to ensure we don't miss any data
+                    start_date = last_timestamp - timedelta(minutes=1)
+                    self.logger.info(f"Fetching data for {ticker_symbol} from last record: {start_date}")
+                    print(f"Fetching data for {ticker_symbol} from last record: {start_date}")
+                else:
+                    # If no existing data, fetch historical data for configured years
+                    years = config.get_int('DEFAULT', 'historical_data_years')
+                    start_date = end_date - relativedelta(years=years)
+                    self.logger.info(f"No existing data found. Fetching {years} years of historical data for {ticker_symbol}")
+                    print(f"No existing data found. Fetching {years} years of historical data for {ticker_symbol}")
+
+                self.logger.info(f"Fetching historical data for {ticker_symbol}")
+
+                historical_data = self.api_client.fetch_historical_data(
+                    ticker_symbol, start_date, end_date, timeframe='1Min'
+                )
+
+                if not historical_data.empty:
+                    historical_data = self._filter_market_hours(historical_data, ny_tz)
+                    self._save_historical_data(ticker_symbol, historical_data)
+                    self.logger.info(f"Historical data for {ticker_symbol} fetched and stored.")
+                    print(f"Historical data for {ticker_symbol} fetched and stored.")
+                else:
+                    self.logger.warning(f"No historical data fetched for {ticker_symbol}")
+                    print(f"No historical data fetched for {ticker_symbol}")
+                    
+        except Exception as e:
+            self.logger.error(f"Error fetching data for {ticker_symbol}: {str(e)}")
+            print(f"Error fetching data for {ticker_symbol}: {str(e)}")
+
+    def fetch_historical_data_async(self, ticker_symbol):
+        """Fetch historical data for a ticker asynchronously."""
+        self.logger.info(f"fetch_historical_data_async for {ticker_symbol} triggered.")
+        threading.Thread(target=self.fetch_historical_data_for_ticker, args=(ticker_symbol,)).start()
+        
+    def add_new_ticker(self, ticker):
+            self.logger.debug(f"Attempting to add ticker: {ticker}")  # Changed from logger to self.logger
+            try:
+                # Log API connection attempt
+                self.logger.debug("Checking API connection")  # Changed
+                
+                # Log ticker validation
+                self.logger.debug(f"Validating ticker {ticker}")  # Changed
+                
+                # Log data retrieval attempt
+                self.logger.debug("Attempting to retrieve ticker data")  # Changed
+                
+                # Validate ticker symbol format first
+                if not self._validate_ticker_symbol(ticker):
+                    self.logger.error(f"Invalid ticker symbol format: {ticker}")
+                    return False
+
+                tickers_file = config.get('DEFAULT', 'tickers_file')
+                ticker_added = append_ticker_to_csv(ticker, tickers_file)
+                if ticker_added:
+                    with self.lock:  # Ensure thread safety
+                        self.reload_tickers()
+                        # Update the real-time streamer first before fetching historical
+                        if self.real_time_streamer:
+                            try:
+                                self.real_time_streamer.update_tickers(self.tickers)
+                                self.logger.info(f"Real-time streaming updated for {ticker}")
+                            except Exception as e:
+                                self.logger.error(f"Failed to update real-time streaming for {ticker}: {e}")
+                                
+                        # Fetch historical data last since it's async and most likely to fail
+                        self.fetch_historical_data_async(ticker)
+                        
+                    self.logger.info(f"Ticker {ticker} successfully added and initialization started")
+                    self.logger.debug(f"Successfully added ticker: {ticker}")  # Changed
+                    return True
+                
+                self.logger.warning(f"Ticker {ticker} was not added - may already exist")
+                return False
+                
+            except Exception as e:
+                self.logger.error(f"Failed to add ticker {ticker}: {str(e)}", exc_info=True)  # Changed
+                return False
+        
+    def _validate_ticker_symbol(self, symbol):
+        """Validate ticker symbol format."""
+        # Basic validation - could be enhanced based on specific requirements
+        if not isinstance(symbol, str):
+            return False
+        if not 1 <= len(symbol) <= 5:  # Standard ticker length
+            return False
+        if not symbol.isalpha():  # Basic check for alphabetic characters
+            return False
+        return True
+            
+    def get_last_record_timestamp(self, ticker_symbol):
+        """Get the timestamp of the last record for a ticker in the database"""
+        session = db_manager.Session()
+        try:
+            last_record = session.query(HistoricalData)\
+                .filter_by(ticker_symbol=ticker_symbol)\
+                .order_by(HistoricalData.timestamp.desc())\
+                .first()
+            
+            if last_record:
+                # Make sure the timestamp is timezone-aware
+                ny_tz = pytz.timezone('America/New_York')
+                if last_record.timestamp.tzinfo is None:
+                    aware_timestamp = ny_tz.localize(last_record.timestamp)
+                else:
+                    aware_timestamp = last_record.timestamp.astimezone(ny_tz)
+                
+                self.logger.info(f"Found last record for {ticker_symbol} at {aware_timestamp}")
+                print(f"CRITICAL DEBUG: Found last record for {ticker_symbol} at {aware_timestamp}")
+                print(f"CRITICAL DEBUG: Timestamp timezone info: {aware_timestamp.tzinfo}")
+                return aware_timestamp
+            else:
+                self.logger.info(f"No existing records found for {ticker_symbol}")
+                print(f"CRITICAL DEBUG: No existing records found for {ticker_symbol}")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"Error getting last record timestamp for {ticker_symbol}: {str(e)}")
+            print(f"CRITICAL DEBUG: Error getting last record timestamp: {str(e)}")
+            raise
+        finally:
+            session.close()
+            
+    def verify_data_continuity(self, ticker):
+        """Verify there are no gaps in the data and fetch missing data if needed"""
+        try:
+            last_timestamp = self.get_last_record_timestamp(ticker)
+            if last_timestamp:
+                current_time = datetime.now(pytz.timezone('America/New_York'))
+                # Check if we've missed any data (gap larger than 5 minutes during market hours)
+                if (current_time - last_timestamp).total_seconds() > 300:  # 5 minutes
+                    self.logger.info(f"Data gap detected for {ticker}, fetching missing data")
+                    self.fetch_historical_data_for_ticker(ticker)
+        except Exception as e:
+            self.logger.error(f"Error verifying data continuity for {ticker}: {str(e)}")
+            raise
+        
+    def initialize_database(self):
+        """Initialize database with historical data"""
+        try:
+            with self.lock:
+                print(f"CRITICAL DEBUG: Starting database initialization")
+                ny_tz = pytz.timezone('America/New_York')
+                end_date = datetime.now(ny_tz)
+                
+                for ticker in self.tickers:
+                    print(f"CRITICAL DEBUG: Processing ticker {ticker}")
+                    # Get the last record timestamp using db_manager
+                    last_timestamp = db_manager.get_last_timestamp(ticker)
+                    
+                    if last_timestamp:
+                        # If we have data, start from the last record
+                        # Add a small buffer (1 bar) to ensure we don't miss any data
+                        start_date = last_timestamp - timedelta(minutes=1)
+                        print(f"CRITICAL DEBUG: Found last record for {ticker}, starting from {start_date}")
+                        print(f"CRITICAL DEBUG: Start date timezone info: {start_date.tzinfo}")
+                    else:
+                        # If no existing data, fetch historical data for configured years
+                        years = config.get_int('DEFAULT', 'historical_data_years')
+                        start_date = end_date - relativedelta(years=years)  # Will inherit timezone from end_date
+                        print(f"CRITICAL DEBUG: No existing data for {ticker}, fetching {years} years of history")
+                        print(f"CRITICAL DEBUG: Start date timezone info: {start_date.tzinfo}")
+
+                    # Print the date range for debugging
+                    print(f"CRITICAL DEBUG: Date range from {start_date} to {end_date}")
+                    print(f"CRITICAL DEBUG: End date timezone info: {end_date.tzinfo}")
+
+                    self.logger.info(f"Fetching historical data for {ticker}")
+
+                    # Fetch and store historical data
+                    historical_data = self.api_client.fetch_historical_data(
+                        ticker, start_date, end_date, timeframe='5Min'
+                    )
+
+                    print(f"CRITICAL DEBUG: Got data empty={historical_data.empty}")
+
+                    if not historical_data.empty:
+                        # Filter data to market hours (9:30 AM to 4:00 PM EST)
+                        historical_data = self._filter_market_hours(historical_data, ny_tz)
+                        # Save historical data using _save_historical_data method
+                        self._save_historical_data(ticker, historical_data)
+                        self.logger.info(f"Historical data for {ticker} fetched and stored.")
+                        print(f"Historical data for {ticker} fetched and stored.")
+                    else:
+                        print(f"CRITICAL DEBUG: No data to save for {ticker}")
+
+                    # Respect rate limits
+                    time_module.sleep(1)  # Ensure 'time_module' is correctly imported
+
+                print("CRITICAL DEBUG: Database initialization completed")
+
+        except Exception as e:
+            self.logger.error(f"Error initializing database: {str(e)}")
+            print(f"CRITICAL DEBUG: Error during initialization: {str(e)}")
+            raise
+
+            
+
+
+
+
+# File: components/data_management_module/database.py
+# Type: py
+
+import sqlite3
+import logging
+from datetime import datetime
+import pandas as pd
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+class DatabaseManager:
+    def __init__(self, db_path=None):
+        if db_path is None:
+            # Create data directory in project root if it doesn't exist
+            data_dir = Path(__file__).parent.parent.parent / 'data'
+            data_dir.mkdir(exist_ok=True)
+            self.db_path = data_dir / 'market_data.db'
+        else:
+            self.db_path = Path(db_path)
+        
+        self.init_db()
+
+    def init_db(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS historical_data (
+                    ticker_symbol TEXT,
+                    timestamp DATETIME,
+                    open REAL,
+                    high REAL,
+                    low REAL,
+                    close REAL,
+                    volume INTEGER,
+                    PRIMARY KEY (ticker_symbol, timestamp)
+                ) WITHOUT ROWID;
+            """)
+
+    def save_historical_data(self, ticker: str, data: pd.DataFrame) -> int:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                records = data.apply(
+                    lambda row: (
+                        ticker,
+                        row.name.isoformat(),
+                        row['open'],
+                        row['high'],
+                        row['low'],
+                        row['close'],
+                        row['volume']
+                    ),
+                    axis=1
+                ).tolist()
+                
+                cursor.executemany("""
+                    INSERT OR IGNORE INTO historical_data 
+                    (ticker_symbol, timestamp, open, high, low, close, volume)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, records)
+                
+                new_records = cursor.rowcount
+                logger.info(f"Inserted {new_records} new records for {ticker}")
+                return new_records
+                
+        except Exception as e:
+            logger.error(f"Error saving historical data for {ticker}: {str(e)}")
+            raise
+
+    def get_last_timestamp(self, ticker: str) -> datetime:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT MAX(timestamp) 
+                    FROM historical_data 
+                    WHERE ticker_symbol = ?
+                """, (ticker,))
+                result = cursor.fetchone()[0]
+                return datetime.fromisoformat(result) if result else None
+                
+        except Exception as e:
+            logger.error(f"Error getting last timestamp for {ticker}: {str(e)}")
+            return None
+
+# File: components/data_management_module/real_time_data.py
+# Type: py
+
+# components/data_management_module/real_time_data.py
+
+import zmq
+import json
+import threading
+import logging
+from datetime import datetime, timedelta
+import asyncio
+from alpaca_trade_api.stream import Stream
+from alpaca_trade_api.common import URL
+from .config import config
+from .data_access_layer import db_manager, HistoricalData
+import pytz
+
+class RealTimeDataStreamer:
+    """Handles real-time market data streaming using ZeroMQ for internal distribution"""
+    
+    def __init__(self, tickers):
+        self.logger = self._setup_logging()
+        self.tickers = tickers
+        
+        # Initialize ZeroMQ context and sockets
+        self.zmq_context = zmq.Context()
+        self.publisher = self.zmq_context.socket(zmq.PUB)
+        self.publisher.bind(f"tcp://*:{config.get('DEFAULT', 'zeromq_port')}")
+        
+        # Initialize Alpaca stream
+        self.stream = Stream(
+            config.get('api', 'key_id'),
+            config.get('api', 'secret_key'),
+            base_url=URL(config.get('api', 'base_url')),
+            data_feed='sip'
+        )
+        
+        self._running = False
+        self._last_prices = {}
+        self._last_update = {}
+        self._interval = timedelta(minutes=1)
+
+    def _setup_logging(self):
+        """Set up logging for the real-time data streamer"""
+        logger = logging.getLogger('realtime_data')
+        logger.setLevel(logging.INFO)
+        handler = logging.FileHandler(config.get('DEFAULT', 'log_file'))
+        handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        logger.addHandler(handler)
+        return logger
+
+    async def _is_market_hours(self):
+        """Check if current time is within market hours"""
+        ny_time = datetime.now(pytz.timezone('America/New_York'))
+        market_open = ny_time.replace(hour=9, minute=30, second=0, microsecond=0)
+        market_close = ny_time.replace(hour=16, minute=0, second=0, microsecond=0)
+        return market_open <= ny_time <= market_close
+
+    async def handle_bar(self, bar):
+        try:
+            if not await self._is_market_hours():
+                return
+
+            # Convert bar.timestamp from nanoseconds to datetime
+            bar.timestamp = datetime.datetime.fromtimestamp(bar.timestamp / 1e9, tz=pytz.UTC)
+
+            # Get the minute of the timestamp
+            minute = bar.timestamp.minute
+
+            # UNCOMMENT THIS TO STORE 5 MINUTE BARS
+            # Check if the minute is a multiple of 5
+            # if minute % 5 == 0:
+            #     # Process the bar
+            #     self._store_bar_data(bar)
+            #     self._publish_bar_data(bar)
+            #     self._last_update[bar.symbol] = bar.timestamp
+            #     self._last_prices[bar.symbol] = bar.close
+            # else:
+            #     # Do not process the bar
+            #     pass
+
+        except Exception as e:
+            self.logger.error(f"Error processing bar data: {str(e)}")
+            
+    def update_tickers(self, new_tickers):
+        """Update the list of tickers being streamed."""
+        try:
+            with threading.Lock():
+                current_set = set(self.tickers)
+                new_set = set(new_tickers)
+                
+                success = True
+                # Track changes to allow rollback if needed
+                unsubscribed = set()
+                subscribed = set()
+                
+                # First unsubscribe removed tickers
+                for ticker in current_set - new_set:
+                    try:
+                        self.stream.unsubscribe_bars(ticker)
+                        unsubscribed.add(ticker)
+                        self.logger.info(f"Unsubscribed from {ticker}")
+                    except Exception as e:
+                        self.logger.error(f"Failed to unsubscribe {ticker}: {e}")
+                        success = False
+                        break
+                
+                # Then subscribe new tickers if unsubscribe was successful
+                if success:
+                    for ticker in new_set - current_set:
+                        try:
+                            self.stream.subscribe_bars(self.handle_bar, ticker)
+                            subscribed.add(ticker)
+                            self.logger.info(f"Subscribed to {ticker}")
+                        except Exception as e:
+                            self.logger.error(f"Failed to subscribe {ticker}: {e}")
+                            success = False
+                            break
+                
+                if not success:
+                    # Rollback changes if anything failed
+                    self._rollback_changes(subscribed, unsubscribed)
+                    return False
+                    
+                self.tickers = list(new_set)
+                return True
+                
+        except Exception as e:
+            self.logger.error(f"Error updating tickers: {e}")
+            return False
+
+    def _rollback_changes(self, subscribed, unsubscribed):
+        """Rollback any changes made during failed update."""
+        for ticker in subscribed:
+            try:
+                self.stream.unsubscribe_bars(ticker)
+            except Exception as e:
+                self.logger.error(f"Rollback: Failed to unsubscribe {ticker}: {e}")
+                
+        for ticker in unsubscribed:
+            try:
+                self.stream.subscribe_bars(self.handle_bar, ticker)
+            except Exception as e:
+                self.logger.error(f"Rollback: Failed to resubscribe {ticker}: {e}")
+
+    
+    def _store_bar_data(self, bar):
+        """Store bar data in the database"""
+        try:
+            # Save real-time data using db_manager
+            db_manager.save_real_time_data(bar)
+            # Log confirmation
+            self.logger.info(f"Stored real-time data for {bar.symbol} at {bar.timestamp}")
+        except Exception as e:
+            self.logger.error(f"Failed to store bar data: {str(e)}")
+
+
+    def _publish_bar_data(self, bar):
+        """Publish bar data through ZeroMQ"""
+        try:
+            message = {
+                'symbol': bar.symbol,
+                'timestamp': bar.timestamp.isoformat(),
+                'open': bar.open,
+                'high': bar.high,
+                'low': bar.low,
+                'close': bar.close,
+                'volume': bar.volume
+            }
+
+            topic = f"{config.get('DEFAULT', 'zeromq_topic')}.{bar.symbol}"
+            self.publisher.send_string(f"{topic} {json.dumps(message)}")
+            self.logger.debug(f"Published bar data for {bar.symbol}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to publish bar data: {str(e)}")
+
+
+    def start(self):
+        """Start the real-time data streaming"""
+        if self._running:
+            self.logger.warning("Streamer is already running")
+            return
+
+        self._running = True
+        self.logger.info("Starting real-time data streaming")
+        
+        # Subscribe to bars for all tickers
+        for ticker in self.tickers:
+            self.stream.subscribe_bars(self.handle_bar, ticker)
+            self.logger.info(f"Subscribed to bars for {ticker}")
+
+        # Start the stream in a separate thread
+        try:
+            self.stream_thread = threading.Thread(target=self._run_stream, daemon=True)
+            self.stream_thread.start()
+        except Exception as e:
+            self._running = False
+            self.logger.error(f"Stream error: {str(e)}")
+            raise
+    def _run_stream(self):
+        """Run the stream in the event loop"""
+        try:
+            self.stream.run()
+        except Exception as e:
+            self._running = False
+            self.logger.error(f"Stream encountered an error: {str(e)}")
+
+    def stop(self):
+        """Stop the real-time data streaming"""
+        if not self._running:
+            return
+
+        self._running = False
+        try:
+            self.stream.stop()
+            if hasattr(self, 'stream_thread') and self.stream_thread.is_alive():
+                self.stream_thread.join(timeout=5)
+            self.publisher.close()
+            self.zmq_context.term()
+            self.logger.info("Stopped real-time data streaming")
+        except Exception as e:
+            self.logger.error(f"Error stopping stream: {str(e)}")
+
+    def update_tickers(self, new_tickers):
+        """Update the list of tickers to stream."""
+        with threading.Lock():
+            # Unsubscribe from tickers no longer in the list
+            for ticker in set(self.tickers) - set(new_tickers):
+                self.stream.unsubscribe_bars(ticker)
+                self.logger.info(f"Unsubscribed from bars for {ticker}")
+
+            # Subscribe to new tickers
+            for ticker in set(new_tickers) - set(self.tickers):
+                self.stream.subscribe_bars(self.handle_bar, ticker)
+                self.logger.info(f"Subscribed to bars for {ticker}")
+
+            self.tickers = new_tickers
+            print("Tickers updated for streaming.")
+
+
+# File: components/data_management_module/run_data_manager.py
+# Type: py
+
+import logging
+from components.data_management_module.data_manager import DataManager
+import time
+import signal
+import sys
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('logs/data_manager.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+def signal_handler(signum, frame):
+    logger.info("Received shutdown signal. Stopping application...")
+    if data_manager:
+        data_manager.stop_real_time_streaming()
+    sys.exit(0)
+
+# Register signal handlers
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+if __name__ == "__main__":
+    data_manager = None
+    try:
+        logger.info("Initializing DataManager...")
+        data_manager = DataManager()
+        
+        # Start real-time streaming
+        logger.info("Starting real-time data streaming...")
+        data_manager.start_real_time_streaming()
+        
+        # Keep the script running and perform maintenance
+        while True:
+            try:
+                # Perform maintenance every 24 hours
+                data_manager.perform_maintenance()
+                
+                # Verify data is being collected
+                for ticker in data_manager.tickers:
+                    latest_data = data_manager.get_historical_data(
+                        ticker,
+                        start_date=datetime.now() - timedelta(hours=1),
+                        end_date=datetime.now()
+                    )
+                    if latest_data:
+                        logger.info(f"Latest data for {ticker}: {len(latest_data)} records")
+                
+                time.sleep(300)  # Check every 5 minutes
+                
+            except Exception as e:
+                logger.error(f"Error in main loop: {str(e)}")
+                time.sleep(60)  # Wait a minute before retrying
+                
+    except Exception as e:
+        logger.error(f"Fatal error in main: {str(e)}")
+        raise
+    finally:
+        if data_manager:
+            data_manager.stop_real_time_streaming()
+
+# File: components/data_management_module/utils.py
+# Type: py
+
+# components/data_management_module/utils.py
+
+def append_ticker_to_csv(ticker_symbol, tickers_file_path):
+    """Append a new ticker to the tickers.csv file if it doesn't already exist."""
+    try:
+        with open(tickers_file_path, 'r+') as f:
+            tickers = [line.strip() for line in f.readlines()]
+            if ticker_symbol in tickers:
+                print(f"Ticker {ticker_symbol} already exists in {tickers_file_path}")
+                return False  # Indicate that the ticker was not added
+            f.write(f"{ticker_symbol}\n")
+            print(f"Ticker {ticker_symbol} added to {tickers_file_path}")
+            return True  # Indicate that the ticker was successfully added
+    except Exception as e:
+        print(f"Error appending ticker to CSV: {str(e)}")
+        return False
+
+
+# File: components/data_management_module/verify_data.py
+# Type: py
+
+import sqlite3
+import pandas as pd
+from datetime import datetime, timedelta
+import pytz
+
+def verify_data():
+    # Connect to the database
+    conn = sqlite3.connect('data/data.db')
+    
+    # Check tables
+    print("\nTables in database:")
+    tables = pd.read_sql_query("SELECT name FROM sqlite_master WHERE type='table';", conn)
+    print(tables)
+    
+    # Check tickers
+    print("\nTickers in database:")
+    tickers = pd.read_sql_query("SELECT * FROM tickers;", conn)
+    print(tickers)
+    
+    # For each ticker, check the latest data
+    for ticker in tickers['symbol']:
+        print(f"\nLatest data for {ticker}:")
+        query = f"""
+        SELECT * FROM historical_data 
+        WHERE ticker_symbol = '{ticker}' 
+        ORDER BY timestamp DESC 
+        LIMIT 5;
+        """
+        latest_data = pd.read_sql_query(query, conn)
+        print(latest_data)
+        
+        # Check data frequency
+        print(f"\nData frequency check for {ticker} (last 24 hours):")
+        query = f"""
+        SELECT COUNT(*) as count, 
+               strftime('%Y-%m-%d %H', timestamp) as hour
+        FROM historical_data 
+        WHERE ticker_symbol = '{ticker}'
+        AND timestamp > datetime('now', '-1 day')
+        GROUP BY hour
+        ORDER BY hour DESC;
+        """
+        frequency = pd.read_sql_query(query, conn)
+        print(frequency)
+    
+    conn.close()
+
+if __name__ == "__main__":
+    verify_data()
+

@@ -1,0 +1,23 @@
+{
+    "moving_average_crossover": {
+        "short_window": 40,
+        "long_window": 100
+    },
+    "rsi_strategy": {
+        "period": 14,
+        "overbought": 70,
+        "oversold": 30
+    },
+    "macd_strategy": {
+        "fast_period": 12,
+        "slow_period": 26,
+        "signal_period": 9
+    },
+    "bollinger_bands": {
+        "window": 20,
+        "num_std_dev": 2
+    },
+    "momentum_strategy": {
+        "window": 14
+    }
+}
