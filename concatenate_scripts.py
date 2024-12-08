@@ -10,32 +10,45 @@ def should_exclude_file(filename):
     exclude_patterns = [
         '.log', '.env', '.gitignore', '.DS_Store', 'Thumbs.db',
         '__pycache__', '.pyc', '.pyo', '.pyd', '.db', '.sqlite',
-        '.swp', '.swo', '~',
+        '.swp', '.swo', '~', '.egg-info', 'venv', 'node_modules'
     ]
     return any(filename.endswith(pattern) or pattern in filename for pattern in exclude_patterns)
 
 def should_include_file(filename):
     """
     Determines if a file should be included in concatenation.
+    Added support for additional extensions like .json, .ts, .tsx, .md
     """
-    include_extensions = {'.py', '.js', '.css', '.html'}
+    include_extensions = {
+        '.py', '.js', '.css', '.html', '.json', '.ts', '.tsx', '.md'
+    }
     return any(filename.endswith(ext) for ext in include_extensions)
 
 def get_comment_syntax(file_type):
     """
     Returns the appropriate comment syntax for the given file type.
+    Added comment syntax for json, ts, tsx, md files.
     """
     comment_styles = {
         'py': '#',
         'js': '//',
         'css': '/*',
-        'html': '<!--'
+        'html': '<!--',
+        'json': '//',    # Using // for JSON files for clarity in concatenation
+        'ts': '//',       # TypeScript uses // like JS
+        'tsx': '//',      # TSX supports JS/TS style comments
+        'md': '<!--'      # Markdown doesn't have native comments, using HTML style
     }
+
     comment_end_styles = {
         'css': ' */',
-        'html': ' -->'
+        'html': ' -->',
+        'md': ' -->'      # Using HTML comment style for Markdown
     }
-    return comment_styles.get(file_type, '#'), comment_end_styles.get(file_type, '')
+
+    comment_start = comment_styles.get(file_type, '#')
+    comment_end = comment_end_styles.get(file_type, '')
+    return comment_start, comment_end
 
 def read_file_content(file_path):
     """
@@ -58,7 +71,9 @@ def concatenate_scripts(target_folder, exclude_dirs):
     """
     Concatenates all scripts within the target_folder into a single text file,
     excluding specified directories and their subdirectories.
+    Additionally excludes any files inside __pycache__ or venv directories.
     """
+
     # Normalize exclude_dirs to absolute paths
     exclude_dirs_abs = set()
     for ed in exclude_dirs:
@@ -107,11 +122,17 @@ def concatenate_scripts(target_folder, exclude_dirs):
             outfile.write(f"# Module: {module}\n\n")
             for root, dirs, files in os.walk(module):
                 root_abs_path = os.path.abspath(root)
-                # Exclude directories
+
+                # Exclude directories either from exclude list or if they match __pycache__ or venv
                 dirs_to_keep = []
                 for d in dirs:
                     dir_abs_path = os.path.abspath(os.path.join(root, d))
-                    # Check if dir_abs_path should be excluded
+
+                    # Check if directory is __pycache__ or venv
+                    if d == '__pycache__' or d == 'venv':
+                        continue
+
+                    # Check if dir_abs_path should be excluded based on exclude_dirs
                     is_excluded = False
                     for exclude_dir in exclude_dirs_abs:
                         if dir_abs_path == exclude_dir or dir_abs_path.startswith(exclude_dir + os.sep):
@@ -123,6 +144,10 @@ def concatenate_scripts(target_folder, exclude_dirs):
 
                 # Process files
                 for file in sorted(files):
+                    # If we are currently in __pycache__ or venv directory, skip
+                    if '__pycache__' in root or 'venv' in root:
+                        continue
+
                     if should_include_file(file) and not should_exclude_file(file):
                         file_path = os.path.join(root, file)
                         rel_path = os.path.relpath(file_path)  # Get relative path
