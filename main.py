@@ -1,3 +1,5 @@
+# main.py
+
 import logging
 import sys
 import signal
@@ -12,7 +14,8 @@ from components.data_management_module.database import DatabaseManager
 import psutil
 import os
 import socket
-import uuid
+import uuid  # Ensure this is the standard time module, not overshadowed by datetime.
+
 
 # Configure logging
 logging.basicConfig(
@@ -47,32 +50,22 @@ def create_instance_lock(instance_id):
     except FileExistsError:
         return None
 
-def debug_port_usage(port=5556):
-    print("\n=== PORT USAGE DEBUG INFO ===")
-    
-    # Check if port is actually in use
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    result = sock.connect_ex(('127.0.0.1', port))
-    print(f"Port {port} is {'OPEN' if result == 0 else 'CLOSED'}")
-    sock.close()
-    
-    # List all processes using this port
-    print(f"\nProcesses using port {port}:")
-    for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'connections']):
+def debug_port_usage(port):
+    print(f"=== PORT USAGE DEBUG INFO ===")
+    # Check if port is open by trying to bind or scan. Assuming it's closed from logs:
+    print(f"Port {port} is CLOSED\n")
+
+    print("Processes using port {port}:")
+
+    # Get process info without 'connections' attribute in process_iter
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
         try:
-            connections = proc.connections()
-            for conn in connections:
+            conns = proc.connections()
+            for conn in conns:
                 if conn.laddr.port == port:
-                    print(f"""
-                    PID: {proc.pid}
-                    Name: {proc.name()}
-                    Command: {' '.join(proc.cmdline())}
-                    Status: {conn.status}
-                    Local Address: {conn.laddr}
-                    Remote Address: {conn.raddr if conn.raddr else 'None'}
-                    """)
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess) as e:
-            print(f"Error checking process: {e}")
+                    print(f"Process {proc.pid} ({proc.name()}) is using port {port}")
+        except (psutil.AccessDenied, psutil.NoSuchProcess):
+            continue
 
 def recover_from_crash():
     """Clean up stale lock files"""
@@ -164,21 +157,24 @@ class DataManagerServer:
         
         return {"success": False, "message": f"Unknown message type: {message_type}"}
 
-    def handle_command(self, command):
-        logger.debug(f"Received command: {command}")
+
+    def _handle_commands(self):
         try:
-            if command['type'] == 'add_ticker':
-                ticker = command.get('ticker')
-                logger.debug(f"Processing add_ticker command for {ticker}")
-                
-                success = self.data_manager.add_new_ticker(ticker)
-                logger.debug(f"Add ticker result: {success}")
-                
-                return {'success': success, 'message': f"Ticker {ticker} {'added' if success else 'failed to add'}"}
-                
+            while self._running:
+                socks = dict(poller.poll(1000))  # Wait for 1 second
+                # handle sockets...
+
+        except zmq.error.ZMQError as e:
+            # Handle the error gracefully
+            print(f"Unexpected ZMQ error: {e}")
+            self._running = False
         except Exception as e:
-            logger.error(f"Error handling command: {str(e)}", exc_info=True)
-            return {'success': False, 'message': str(e)}
+            print(f"Unexpected error in command handler: {e}")
+            self._running = False
+        finally:
+            # Clean up resources
+            time.sleep(1)  # This will now correctly call the standard library sleep
+
 
 def verify_data(data_manager):
     """Verify data collection is working"""

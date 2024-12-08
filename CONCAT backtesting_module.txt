@@ -1,0 +1,1764 @@
+# Module: backtesting_module
+
+# File: components/backtesting_module/__init__.py
+# Type: py
+
+# In __init__.py
+import os
+
+# Create necessary directories
+os.makedirs('logs', exist_ok=True)
+os.makedirs('data', exist_ok=True)
+
+# File: components/backtesting_module/backtester.py
+# Type: py
+
+# components/backtesting_module/backtester.py
+
+import backtrader as bt
+from components.backtesting_module.strategy_adapters import StrategyAdapter
+from components.data_management_module.alpaca_api import AlpacaAPIClient
+from datetime import datetime
+import os
+import sqlite3
+import json
+import logging
+from .config import BacktestConfig
+from .exceptions import BacktestError, DataError
+from .utils import validate_backtest_data, calculate_statistics
+
+logging.basicConfig(
+    filename='logs/backtesting.log',
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s:%(message)s'
+)
+
+class Backtester:
+    """
+    Runs backtests using historical data and strategies.
+    """
+
+    def __init__(self, strategy_name, strategy_params, ticker, start_date, end_date):
+        self.strategy_name = strategy_name
+        self.strategy_params = strategy_params
+        self.ticker = ticker
+        self.start_date = start_date
+        self.end_date = end_date
+        self.data = None
+        self.results = None
+        self.final_value = None
+        self.alpaca_client = AlpacaAPIClient()
+
+    def load_data(self):
+        """
+        Fetches historical data from the Alpaca API.
+        """
+        logging.info(f"Fetching data for {self.ticker} from {self.start_date} to {self.end_date}")
+        try:
+            self.data = self.alpaca_client.fetch_historical_data(
+                self.ticker,
+                self.start_date,
+                self.end_date,
+                timeframe='1Day'  # Adjust timeframe as needed
+            )
+            if self.data.empty:
+                raise ValueError(f"No data found for ticker {self.ticker} between {self.start_date} and {self.end_date}")
+            self.data.rename(columns={
+                't': 'datetime',
+                'o': 'open',
+                'h': 'high',
+                'l': 'low',
+                'c': 'close',
+                'v': 'volume'
+            }, inplace=True)
+            self.data.set_index('datetime', inplace=True)
+            self.data.index = pd.to_datetime(self.data.index)
+        except Exception as e:
+            logging.error(f"Error fetching data: {e}")
+            raise
+
+    # In components/backtesting_module/backtester.py
+    # Update the run_backtest method:
+
+    def run_backtest(self, cash=100000.0, commission=0.001):
+        try:
+            self.load_data()
+            cerebro = bt.Cerebro()
+            data_feed = bt.feeds.PandasData(dataname=self.data)
+            cerebro.adddata(data_feed)
+            
+            # Get strategy class from adapter
+            strategy_class = StrategyAdapter.get_strategy(self.strategy_name)
+            cerebro.addstrategy(strategy_class, **self.strategy_params)
+            
+            cerebro.broker.setcash(cash)
+            cerebro.broker.setcommission(commission=commission)
+            cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe')
+            cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
+            cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')
+            
+            logging.info(f"Starting backtest for {self.strategy_name} on {self.ticker}")
+            self.results = cerebro.run()
+            self.final_value = cerebro.broker.getvalue()
+            logging.info(f"Backtest completed. Final portfolio value: {self.final_value}")
+        except Exception as e:
+            logging.error(f"Error during backtest: {e}")
+            raise
+
+    def save_results(self):
+        if not os.path.exists('components/backtesting_module/results'):
+            os.makedirs('components/backtesting_module/results')
+        conn = sqlite3.connect('components/backtesting_module/results/backtest_results.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS backtest_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy_name TEXT,
+                strategy_params TEXT,
+                ticker TEXT,
+                start_date TEXT,
+                end_date TEXT,
+                final_value REAL,
+                total_return REAL,
+                sharpe_ratio REAL,
+                max_drawdown REAL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        analyzer = self.results[0].analyzers
+        total_return = analyzer.returns.get_analysis()['rtot']
+        sharpe_ratio = analyzer.sharpe.get_analysis().get('sharperatio', None)
+        max_drawdown = analyzer.drawdown.get_analysis()['max']['drawdown']
+
+        cursor.execute('''
+            INSERT INTO backtest_results (
+                strategy_name, strategy_params, ticker, start_date, end_date,
+                final_value, total_return, sharpe_ratio, max_drawdown
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            self.strategy_name,
+            json.dumps(self.strategy_params),
+            self.ticker,
+            self.start_date.strftime('%Y-%m-%d'),
+            self.end_date.strftime('%Y-%m-%d'),
+            self.final_value,
+            total_return,
+            sharpe_ratio,
+            max_drawdown
+        ))
+        conn.commit()
+        conn.close()
+
+    def get_performance_metrics(self):
+        analyzer = self.results[0].analyzers
+        metrics = {
+            'Final Portfolio Value': self.final_value,
+            'Total Return': analyzer.returns.get_analysis()['rtot'],
+            'Sharpe Ratio': analyzer.sharpe.get_analysis().get('sharperatio', None),
+            'Max Drawdown': analyzer.drawdown.get_analysis()['max']['drawdown']
+        }
+        return metrics
+
+    def run_benchmark(self, benchmark_ticker, cash=100000.0, commission=0.001):
+        try:
+            logging.info(f"Fetching benchmark data for {benchmark_ticker}")
+            benchmark_data = self.alpaca_client.fetch_historical_data(
+                benchmark_ticker,
+                self.start_date,
+                self.end_date,
+                timeframe='1Day'
+            )
+            if benchmark_data.empty:
+                raise ValueError(f"No data found for benchmark ticker {benchmark_ticker} between {self.start_date} and {self.end_date}")
+            benchmark_data.rename(columns={
+                't': 'datetime',
+                'o': 'open',
+                'h': 'high',
+                'l': 'low',
+                'c': 'close',
+                'v': 'volume'
+            }, inplace=True)
+            benchmark_data.set_index('datetime', inplace=True)
+            benchmark_data.index = pd.to_datetime(benchmark_data.index)
+
+            cerebro = bt.Cerebro()
+            data_feed = bt.feeds.PandasData(dataname=benchmark_data)
+            cerebro.adddata(data_feed)
+            cerebro.addstrategy(BenchmarkStrategy)
+            cerebro.broker.setcash(cash)
+            cerebro.broker.setcommission(commission=commission)
+            cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe')
+            cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
+            cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')
+            benchmark_results = cerebro.run()
+            final_value = cerebro.broker.getvalue()
+            analyzer = benchmark_results[0].analyzers
+            metrics = {
+                'Final Portfolio Value': final_value,
+                'Total Return': analyzer.returns.get_analysis()['rtot'],
+                'Sharpe Ratio': analyzer.sharpe.get_analysis().get('sharperatio', None),
+                'Max Drawdown': analyzer.drawdown.get_analysis()['max']['drawdown']
+            }
+            return metrics
+        except Exception as e:
+            logging.error(f"Error during benchmark backtest: {e}")
+            raise
+
+    def compare_with_benchmark(self, benchmark_ticker='SPY'):
+        strategy_metrics = self.get_performance_metrics()
+        benchmark_metrics = self.run_benchmark(benchmark_ticker)
+
+        comparison = {
+            'Strategy': strategy_metrics,
+            'Benchmark': benchmark_metrics
+        }
+        return comparison
+
+# File: components/backtesting_module/benchmark_strategy.py
+# Type: py
+
+# components/backtesting_module/benchmark_strategy.py
+
+import backtrader as bt
+
+class BenchmarkStrategy(bt.Strategy):
+    """
+    Simple buy and hold strategy for benchmark comparison.
+    """
+    
+    def __init__(self):
+        self.data_close = self.datas[0].close
+        self.bought = False
+        
+    def next(self):
+        if not self.bought:
+            self.buy()
+            self.bought = True
+
+# File: components/backtesting_module/config.py
+# Type: py
+
+# components/backtesting_module/config.py
+
+class BacktestConfig:
+    """Configuration for backtesting module"""
+    
+    # Database settings
+    DB_PATH = 'data/backtest_results.db'
+    
+    # Backtest settings
+    INITIAL_CASH = 100000.0
+    DEFAULT_COMMISSION = 0.001
+    BENCHMARK_TICKER = 'SPY'
+    
+    # Data settings
+    DEFAULT_TIMEFRAME = '1Day'
+    MIN_DATA_POINTS = 100
+    
+    # Resource limits
+    MAX_OPTIMIZATION_COMBINATIONS = 100
+    CPU_THRESHOLD = 80
+    MEMORY_THRESHOLD = 80
+
+# File: components/backtesting_module/exceptions.py
+# Type: py
+
+# components/backtesting_module/exceptions.py
+
+class BacktestError(Exception):
+    """Base exception for backtesting errors"""
+    pass
+
+class DataError(BacktestError):
+    """Exception for data-related errors"""
+    pass
+
+class StrategyError(BacktestError):
+    """Exception for strategy-related errors"""
+    pass
+
+class OptimizationError(BacktestError):
+    """Exception for optimization-related errors"""
+    pass
+
+
+# File: components/backtesting_module/formatters.py
+# Type: py
+
+# components/backtesting_module/formatters.py
+
+class ResultFormatter:
+    """
+    Formats backtest results for consistent presentation.
+    """
+    
+    @staticmethod
+    def format_metrics(metrics: dict) -> dict:
+        """
+        Formats performance metrics with proper rounding and labels.
+        """
+        return {
+            'Total Return': f"{metrics['Total Return']*100:.2f}%",
+            'Sharpe Ratio': f"{metrics['Sharpe Ratio']:.2f}",
+            'Max Drawdown': f"{metrics['Max Drawdown']:.2f}%",
+            'Final Value': f"${metrics['Final Portfolio Value']:,.2f}"
+        }
+    
+    @staticmethod
+    def format_optimization_results(results: list) -> list:
+        """
+        Formats optimization results for display.
+        """
+        formatted_results = []
+        for result in results:
+            formatted_results.append({
+                'Parameters': result['params'],
+                'Sharpe Ratio': f"{result['sharpe_ratio']:.2f}",
+                'Total Return': f"{result['total_return']*100:.2f}%",
+                'Max Drawdown': f"{result['max_drawdown']:.2f}%"
+            })
+        return formatted_results
+
+# File: components/backtesting_module/optimizer.py
+# Type: py
+
+# components/backtesting_module/optimizer.py
+
+import backtrader as bt
+from components.backtesting_module.strategy_adapters import StrategyAdapter
+from components.data_management_module.alpaca_api import AlpacaAPIClient
+from datetime import datetime
+import pandas as pd
+import logging
+from itertools import product
+
+logging.basicConfig(
+    filename='logs/optimizer.log',
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s:%(message)s'
+)
+
+class Optimizer:
+    """
+    Performs parameter optimization (grid search).
+    """
+
+    def __init__(self, strategy_name, ticker, start_date, end_date):
+        self.strategy_name = strategy_name
+        self.ticker = ticker
+        self.start_date = start_date
+        self.end_date = end_date
+        self.data = None
+        self.alpaca_client = AlpacaAPIClient()
+
+    def load_data(self):
+        """
+        Fetches historical data from the Alpaca API.
+        """
+        logging.info(f"Fetching data for {self.ticker} from {self.start_date} to {self.end_date}")
+        try:
+            self.data = self.alpaca_client.fetch_historical_data(
+                self.ticker,
+                self.start_date,
+                self.end_date,
+                timeframe='1Day'
+            )
+            if self.data.empty:
+                raise ValueError(f"No data found for ticker {self.ticker} between {self.start_date} and {self.end_date}")
+            self.data.rename(columns={
+                't': 'datetime',
+                'o': 'open',
+                'h': 'high',
+                'l': 'low',
+                'c': 'close',
+                'v': 'volume'
+            }, inplace=True)
+            self.data.set_index('datetime', inplace=True)
+            self.data.index = pd.to_datetime(self.data.index)
+        except Exception as e:
+            logging.error(f"Error fetching data: {e}")
+            raise
+
+    def run_optimization(self, param_ranges, cash=100000.0, commission=0.001, max_combinations=100):
+        self.load_data()
+        cerebro = bt.Cerebro(optreturn=False)
+        data_feed = bt.feeds.PandasData(dataname=self.data)
+        cerebro.adddata(data_feed)
+
+        # Generate parameter combinations
+        param_names = list(param_ranges.keys())
+        param_values = list(param_ranges.values())
+        combinations = list(product(*param_values))
+
+        # Limit combinations to prevent overload
+        if len(combinations) > max_combinations:
+            logging.warning(f"Limiting combinations to first {max_combinations} due to resource constraints.")
+            combinations = combinations[:max_combinations]
+
+        cerebro.optstrategy(
+            StrategyAdapter,
+            strategy_name=self.strategy_name,
+            strategy_params=[
+                dict(zip(param_names, combination)) for combination in combinations
+            ]
+        )
+        cerebro.broker.setcash(cash)
+        cerebro.broker.setcommission(commission=commission)
+        cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe')
+        cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
+        cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')
+        logging.info(f"Starting optimization for {self.strategy_name} on {self.ticker}")
+        optimized_runs = cerebro.run(maxcpus=1)
+        logging.info("Optimization completed.")
+        return self.collect_results(optimized_runs)
+
+    def collect_results(self, optimized_runs):
+        optimization_results = []
+        for run in optimized_runs:
+            for strategy in run:
+                params = strategy.params.strategy_params
+                sharpe = strategy.analyzers.sharpe.get_analysis().get('sharperatio', None)
+                drawdown = strategy.analyzers.drawdown.get_analysis()['max']['drawdown']
+                total_return = strategy.analyzers.returns.get_analysis()['rtot']
+                optimization_results.append({
+                    'params': params,
+                    'sharpe_ratio': sharpe,
+                    'max_drawdown': drawdown,
+                    'total_return': total_return
+                })
+        return optimization_results
+
+    def get_best_params(self, optimization_results, metric='sharpe_ratio'):
+        df = pd.DataFrame(optimization_results)
+        df = df.dropna(subset=[metric])
+        if df.empty:
+            raise ValueError("No valid optimization results to select best parameters.")
+        best_row = df.loc[df[metric].idxmax()]
+        return best_row['params']
+
+# File: components/backtesting_module/parameter_validator.py
+# Type: py
+
+# components/backtesting_module/parameter_validator.py
+
+import logging
+from typing import Dict, Any, List
+
+# components/backtesting_module/parameter_validator.py
+
+class ParameterValidator:
+    """
+    Validates strategy parameters and enforces optimization limits
+    """
+    # Default parameter ranges aligned with documentation
+    DEFAULT_RANGES = {
+        'MovingAverageCrossover': {
+            'short_window': {'min': 5, 'max': 15, 'step': 1},  # Documentation specifies smaller range
+            'long_window': {'min': 10, 'max': 20, 'step': 1}   # Documentation specifies smaller range
+        },
+        'RSIStrategy': {
+            'rsi_period': {'min': 5, 'max': 30, 'step': 5},
+            'oversold': {'min': 20, 'max': 40, 'step': 5},
+            'overbought': {'min': 60, 'max': 80, 'step': 5}
+        },
+        'MACDStrategy': {
+            'fast_period': {'min': 12, 'max': 16, 'step': 1},
+            'slow_period': {'min': 26, 'max': 30, 'step': 1},
+            'signal_period': {'min': 9, 'max': 12, 'step': 1}
+        },
+        'BollingerBandsStrategy': {
+            'window': {'min': 20, 'max': 30, 'step': 5},
+            'num_std': {'min': 2, 'max': 3, 'step': 0.5}
+        }
+    }
+       
+    @staticmethod
+    def validate_parameters(strategy_name: str, params: Dict[str, Any]) -> bool:
+        """
+        Validates that parameters are within acceptable ranges
+        """
+        if strategy_name not in ParameterValidator.DEFAULT_RANGES:
+            logging.warning(f"No validation rules for strategy: {strategy_name}")
+            return True
+            
+        ranges = ParameterValidator.DEFAULT_RANGES[strategy_name]
+        for param, value in params.items():
+            if param in ranges:
+                if value < ranges[param]['min'] or value > ranges[param]['max']:
+                    raise ValueError(
+                        f"Parameter {param} value {value} outside valid range "
+                        f"({ranges[param]['min']}-{ranges[param]['max']})"
+                    )
+        return True
+
+    @staticmethod
+    def generate_grid_parameters(strategy_name: str) -> Dict[str, List[float]]:
+        """
+        Generates parameter combinations for grid search within safe limits
+        """
+        if strategy_name not in ParameterValidator.DEFAULT_RANGES:
+            raise ValueError(f"No grid search parameters defined for {strategy_name}")
+            
+        ranges = ParameterValidator.DEFAULT_RANGES[strategy_name]
+        grid_params = {}
+        
+        for param, range_info in ranges.items():
+            values = list(range(
+                range_info['min'],
+                range_info['max'] + range_info['step'],
+                range_info['step']
+            ))
+            grid_params[param] = values
+            
+        return grid_params
+
+
+# File: components/backtesting_module/resource_monitor.py
+# Type: py
+
+# components/backtesting_module/resource_monitor.py
+
+import psutil
+import logging
+
+class ResourceMonitor:
+    """
+    Simple resource monitoring to prevent system overload during backtesting.
+    """
+    
+    @staticmethod
+    def check_resources():
+        """
+        Checks if system has enough resources for backtesting.
+        """
+        cpu_percent = psutil.cpu_percent()
+        memory_percent = psutil.virtual_memory().percent
+        
+        if cpu_percent > 80 or memory_percent > 80:
+            logging.warning(f"System resources stressed: CPU {cpu_percent}%, Memory {memory_percent}%")
+            raise ResourceWarning("System resources are too constrained for backtesting")
+            
+        return True
+
+    @staticmethod
+    def get_resource_usage():
+        """
+        Returns current resource usage statistics.
+        """
+        return {
+            'cpu_percent': psutil.cpu_percent(),
+            'memory_percent': psutil.virtual_memory().percent,
+            'disk_percent': psutil.disk_usage('/').percent
+        }
+
+# File: components/backtesting_module/results_viewer.py
+# Type: py
+
+# components/backtesting_module/results_viewer.py
+
+import pandas as pd
+import sqlite3
+import json
+from datetime import datetime
+
+class ResultsViewer:
+    """
+    Handles retrieval and visualization of backtest results.
+    """
+    
+    def __init__(self):
+        self.db_path = 'components/backtesting_module/results/backtest_results.db'
+    
+    def get_results(self, limit=10):
+        """
+        Retrieves the most recent backtest results.
+        """
+        conn = sqlite3.connect(self.db_path)
+        query = """
+            SELECT * FROM backtest_results 
+            ORDER BY timestamp DESC 
+            LIMIT ?
+        """
+        results = pd.read_sql_query(query, conn, params=(limit,))
+        conn.close()
+        
+        # Parse strategy parameters from JSON
+        results['strategy_params'] = results['strategy_params'].apply(json.loads)
+        return results
+
+    def get_specific_result(self, backtest_id):
+        """
+        Retrieves a specific backtest result.
+        """
+        conn = sqlite3.connect(self.db_path)
+        query = "SELECT * FROM backtest_results WHERE id = ?"
+        result = pd.read_sql_query(query, conn, params=(backtest_id,))
+        conn.close()
+        
+        if not result.empty:
+            result['strategy_params'] = result['strategy_params'].apply(json.loads)
+        return result
+
+# File: components/backtesting_module/strategies.py
+# Type: py
+
+# components/backtesting_module/strategies.py
+
+import backtrader as bt
+
+class MovingAverageCrossoverStrategy(bt.Strategy):
+    params = (
+        ('short_window', 10),
+        ('long_window', 20),
+    )
+
+    def __init__(self):
+        self.short_ma = bt.indicators.SMA(
+            self.data.close, period=self.params.short_window
+        )
+        self.long_ma = bt.indicators.SMA(
+            self.data.close, period=self.params.long_window
+        )
+        self.crossover = bt.indicators.CrossOver(self.short_ma, self.long_ma)
+
+    def next(self):
+        if self.crossover > 0:
+            self.buy()
+        elif self.crossover < 0:
+            self.sell()
+
+class RSIStrategy(bt.Strategy):
+    params = (
+        ('rsi_period', 14),
+        ('overbought', 70),
+        ('oversold', 30),
+    )
+
+    def __init__(self):
+        self.rsi = bt.indicators.RSI(
+            self.data.close, period=self.params.rsi_period
+        )
+
+    def next(self):
+        if self.rsi < self.params.oversold and not self.position:
+            self.buy()
+        elif self.rsi > self.params.overbought and self.position:
+            self.sell()
+
+class MACDStrategy(bt.Strategy):
+    params = (
+        ('fast_period', 12),
+        ('slow_period', 26),
+        ('signal_period', 9),
+    )
+
+    def __init__(self):
+        self.macd = bt.indicators.MACD(
+            self.data.close,
+            period_me1=self.params.fast_period,
+            period_me2=self.params.slow_period,
+            period_signal=self.params.signal_period
+        )
+
+    def next(self):
+        if self.macd.macd > self.macd.signal and not self.position:
+            self.buy()
+        elif self.macd.macd < self.macd.signal and self.position:
+            self.sell()
+
+class BollingerBandsStrategy(bt.Strategy):
+    params = (
+        ('period', 20),
+        ('devfactor', 2),
+    )
+
+    def __init__(self):
+        self.boll = bt.indicators.BollingerBands(
+            self.data.close, period=self.params.period, devfactor=self.params.devfactor
+        )
+
+    def next(self):
+        if self.data.close < self.boll.lines.bot and not self.position:
+            self.buy()
+        elif self.data.close > self.boll.lines.top and self.position:
+            self.sell()
+
+class MomentumStrategy(bt.Strategy):
+    params = (
+        ('momentum_period', 10),
+    )
+
+    def __init__(self):
+        self.momentum = bt.indicators.MomentumOscillator(
+            self.data.close, period=self.params.momentum_period
+        )
+
+    def next(self):
+        if self.momentum > 0 and not self.position:
+            self.buy()
+        elif self.momentum < 0 and self.position:
+            self.sell()
+
+# File: components/backtesting_module/strategy_adapter.py
+# Type: py
+
+# components/backtesting_module/strategy_adapters.py
+
+import backtrader as bt
+
+class MovingAverageCrossoverStrategy(bt.Strategy):
+    """Moving Average Crossover Strategy Implementation"""
+    
+    params = (
+        ('short_window', 10),
+        ('long_window', 20),
+    )
+
+    def __init__(self):
+        self.short_ma = bt.indicators.SMA(self.data.close, period=self.params.short_window)
+        self.long_ma = bt.indicators.SMA(self.data.close, period=self.params.long_window)
+        self.crossover = bt.indicators.CrossOver(self.short_ma, self.long_ma)
+
+    def next(self):
+        if self.crossover > 0:
+            self.buy()
+        elif self.crossover < 0:
+            self.sell()
+
+class RSIStrategy(bt.Strategy):
+    """RSI Strategy Implementation"""
+    
+    params = (
+        ('rsi_period', 14),
+        ('overbought', 70),
+        ('oversold', 30),
+    )
+
+    def __init__(self):
+        self.rsi = bt.indicators.RSI(self.data.close, period=self.params.rsi_period)
+
+    def next(self):
+        if self.rsi < self.params.oversold and not self.position:
+            self.buy()
+        elif self.rsi > self.params.overbought and self.position:
+            self.sell()
+
+class MACDStrategy(bt.Strategy):
+    """MACD Strategy Implementation"""
+    
+    params = (
+        ('fast_period', 12),
+        ('slow_period', 26),
+        ('signal_period', 9),
+    )
+
+    def __init__(self):
+        self.macd = bt.indicators.MACD(
+            self.data.close,
+            period_me1=self.params.fast_period,
+            period_me2=self.params.slow_period,
+            period_signal=self.params.signal_period
+        )
+
+    def next(self):
+        if self.macd.macd > self.macd.signal and not self.position:
+            self.buy()
+        elif self.macd.macd < self.macd.signal and self.position:
+            self.sell()
+
+class BollingerBandsStrategy(bt.Strategy):
+    """Bollinger Bands Strategy Implementation"""
+    
+    params = (
+        ('period', 20),
+        ('devfactor', 2),
+    )
+
+    def __init__(self):
+        self.boll = bt.indicators.BollingerBands(
+            self.data.close,
+            period=self.params.period,
+            devfactor=self.params.devfactor
+        )
+
+    def next(self):
+        if self.data.close < self.boll.lines.bot and not self.position:
+            self.buy()
+        elif self.data.close > self.boll.lines.top and self.position:
+            self.sell()
+
+class MomentumStrategy(bt.Strategy):
+    """Simple Momentum Strategy Implementation"""
+    
+    params = (
+        ('momentum_period', 10),
+    )
+
+    def __init__(self):
+        self.momentum = bt.indicators.MomentumOscillator(
+            self.data.close,
+            period=self.params.momentum_period
+        )
+
+    def next(self):
+        if self.momentum > 0 and not self.position:
+            self.buy()
+        elif self.momentum < 0 and self.position:
+            self.sell()
+
+class StrategyAdapter:
+    """
+    Strategy adapter that maps strategy names to their implementations.
+    """
+    
+    STRATEGIES = {
+        'MovingAverageCrossover': MovingAverageCrossoverStrategy,
+        'RSI': RSIStrategy,
+        'MACD': MACDStrategy,
+        'BollingerBands': BollingerBandsStrategy,
+        'Momentum': MomentumStrategy
+    }
+
+    @staticmethod
+    def get_strategy(name):
+        """
+        Get strategy class by name.
+        
+        Args:
+            name (str): Name of the strategy
+            
+        Returns:
+            bt.Strategy: Strategy class
+            
+        Raises:
+            ValueError: If strategy name is not found
+        """
+        if name not in StrategyAdapter.STRATEGIES:
+            raise ValueError(f"Strategy '{name}' not found. Available strategies: {list(StrategyAdapter.STRATEGIES.keys())}")
+        return StrategyAdapter.STRATEGIES[name]
+
+# File: components/backtesting_module/utils.py
+# Type: py
+
+# components/backtesting_module/utils.py
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+
+def validate_backtest_data(data):
+    """
+    Validates that data meets minimum requirements for backtesting.
+    """
+    if data is None or len(data) < BacktestConfig.MIN_DATA_POINTS:
+        raise DataError(f"Insufficient data points. Minimum required: {BacktestConfig.MIN_DATA_POINTS}")
+    
+    required_columns = ['open', 'high', 'low', 'close', 'volume']
+    missing_columns = [col for col in required_columns if col not in data.columns]
+    if missing_columns:
+        raise DataError(f"Missing required columns: {missing_columns}")
+
+def calculate_statistics(returns):
+    """
+    Calculates additional performance statistics.
+    """
+    stats = {
+        'total_return': (returns + 1).prod() - 1,
+        'annual_return': (returns + 1).prod() ** (252/len(returns)) - 1,
+        'volatility': returns.std() * np.sqrt(252),
+        'max_drawdown': calculate_max_drawdown(returns),
+        'win_rate': (returns > 0).mean()
+    }
+    return stats
+
+def calculate_max_drawdown(returns):
+    """
+    Calculates maximum drawdown from returns series.
+    """
+    cum_returns = (1 + returns).cumprod()
+    rolling_max = cum_returns.expanding(min_periods=1).max()
+    drawdowns = cum_returns/rolling_max - 1
+    return drawdowns.min()
+
+# Module: backtesting_module
+
+# File: components/backtesting_module/__init__.py
+# Type: py
+
+# In __init__.py
+import os
+
+# Create necessary directories
+os.makedirs('logs', exist_ok=True)
+os.makedirs('data', exist_ok=True)
+
+# File: components/backtesting_module/backtester.py
+# Type: py
+
+# components/backtesting_module/backtester.py
+
+import backtrader as bt
+from components.backtesting_module.strategy_adapters import StrategyAdapter
+from components.data_management_module.alpaca_api import AlpacaAPIClient
+from datetime import datetime
+import os
+import sqlite3
+import json
+import logging
+from .config import BacktestConfig
+from .exceptions import BacktestError, DataError
+from .utils import validate_backtest_data, calculate_statistics
+
+logging.basicConfig(
+    filename='logs/backtesting.log',
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s:%(message)s'
+)
+
+class Backtester:
+    """
+    Runs backtests using historical data and strategies.
+    """
+
+    def __init__(self, strategy_name, strategy_params, ticker, start_date, end_date):
+        self.strategy_name = strategy_name
+        self.strategy_params = strategy_params
+        self.ticker = ticker
+        self.start_date = start_date
+        self.end_date = end_date
+        self.data = None
+        self.results = None
+        self.final_value = None
+        self.alpaca_client = AlpacaAPIClient()
+
+    def load_data(self):
+        """
+        Fetches historical data from the Alpaca API.
+        """
+        logging.info(f"Fetching data for {self.ticker} from {self.start_date} to {self.end_date}")
+        try:
+            self.data = self.alpaca_client.fetch_historical_data(
+                self.ticker,
+                self.start_date,
+                self.end_date,
+                timeframe='1Day'  # Adjust timeframe as needed
+            )
+            if self.data.empty:
+                raise ValueError(f"No data found for ticker {self.ticker} between {self.start_date} and {self.end_date}")
+            self.data.rename(columns={
+                't': 'datetime',
+                'o': 'open',
+                'h': 'high',
+                'l': 'low',
+                'c': 'close',
+                'v': 'volume'
+            }, inplace=True)
+            self.data.set_index('datetime', inplace=True)
+            self.data.index = pd.to_datetime(self.data.index)
+        except Exception as e:
+            logging.error(f"Error fetching data: {e}")
+            raise
+
+    # In components/backtesting_module/backtester.py
+    # Update the run_backtest method:
+
+    def run_backtest(self, cash=100000.0, commission=0.001):
+        try:
+            self.load_data()
+            cerebro = bt.Cerebro()
+            data_feed = bt.feeds.PandasData(dataname=self.data)
+            cerebro.adddata(data_feed)
+            
+            # Get strategy class from adapter
+            strategy_class = StrategyAdapter.get_strategy(self.strategy_name)
+            cerebro.addstrategy(strategy_class, **self.strategy_params)
+            
+            cerebro.broker.setcash(cash)
+            cerebro.broker.setcommission(commission=commission)
+            cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe')
+            cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
+            cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')
+            
+            logging.info(f"Starting backtest for {self.strategy_name} on {self.ticker}")
+            self.results = cerebro.run()
+            self.final_value = cerebro.broker.getvalue()
+            logging.info(f"Backtest completed. Final portfolio value: {self.final_value}")
+        except Exception as e:
+            logging.error(f"Error during backtest: {e}")
+            raise
+
+    def save_results(self):
+        if not os.path.exists('components/backtesting_module/results'):
+            os.makedirs('components/backtesting_module/results')
+        conn = sqlite3.connect('components/backtesting_module/results/backtest_results.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS backtest_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy_name TEXT,
+                strategy_params TEXT,
+                ticker TEXT,
+                start_date TEXT,
+                end_date TEXT,
+                final_value REAL,
+                total_return REAL,
+                sharpe_ratio REAL,
+                max_drawdown REAL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        analyzer = self.results[0].analyzers
+        total_return = analyzer.returns.get_analysis()['rtot']
+        sharpe_ratio = analyzer.sharpe.get_analysis().get('sharperatio', None)
+        max_drawdown = analyzer.drawdown.get_analysis()['max']['drawdown']
+
+        cursor.execute('''
+            INSERT INTO backtest_results (
+                strategy_name, strategy_params, ticker, start_date, end_date,
+                final_value, total_return, sharpe_ratio, max_drawdown
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            self.strategy_name,
+            json.dumps(self.strategy_params),
+            self.ticker,
+            self.start_date.strftime('%Y-%m-%d'),
+            self.end_date.strftime('%Y-%m-%d'),
+            self.final_value,
+            total_return,
+            sharpe_ratio,
+            max_drawdown
+        ))
+        conn.commit()
+        conn.close()
+
+    def get_performance_metrics(self):
+        analyzer = self.results[0].analyzers
+        metrics = {
+            'Final Portfolio Value': self.final_value,
+            'Total Return': analyzer.returns.get_analysis()['rtot'],
+            'Sharpe Ratio': analyzer.sharpe.get_analysis().get('sharperatio', None),
+            'Max Drawdown': analyzer.drawdown.get_analysis()['max']['drawdown']
+        }
+        return metrics
+
+    def run_benchmark(self, benchmark_ticker, cash=100000.0, commission=0.001):
+        try:
+            logging.info(f"Fetching benchmark data for {benchmark_ticker}")
+            benchmark_data = self.alpaca_client.fetch_historical_data(
+                benchmark_ticker,
+                self.start_date,
+                self.end_date,
+                timeframe='1Day'
+            )
+            if benchmark_data.empty:
+                raise ValueError(f"No data found for benchmark ticker {benchmark_ticker} between {self.start_date} and {self.end_date}")
+            benchmark_data.rename(columns={
+                't': 'datetime',
+                'o': 'open',
+                'h': 'high',
+                'l': 'low',
+                'c': 'close',
+                'v': 'volume'
+            }, inplace=True)
+            benchmark_data.set_index('datetime', inplace=True)
+            benchmark_data.index = pd.to_datetime(benchmark_data.index)
+
+            cerebro = bt.Cerebro()
+            data_feed = bt.feeds.PandasData(dataname=benchmark_data)
+            cerebro.adddata(data_feed)
+            cerebro.addstrategy(BenchmarkStrategy)
+            cerebro.broker.setcash(cash)
+            cerebro.broker.setcommission(commission=commission)
+            cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe')
+            cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
+            cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')
+            benchmark_results = cerebro.run()
+            final_value = cerebro.broker.getvalue()
+            analyzer = benchmark_results[0].analyzers
+            metrics = {
+                'Final Portfolio Value': final_value,
+                'Total Return': analyzer.returns.get_analysis()['rtot'],
+                'Sharpe Ratio': analyzer.sharpe.get_analysis().get('sharperatio', None),
+                'Max Drawdown': analyzer.drawdown.get_analysis()['max']['drawdown']
+            }
+            return metrics
+        except Exception as e:
+            logging.error(f"Error during benchmark backtest: {e}")
+            raise
+
+    def compare_with_benchmark(self, benchmark_ticker='SPY'):
+        strategy_metrics = self.get_performance_metrics()
+        benchmark_metrics = self.run_benchmark(benchmark_ticker)
+
+        comparison = {
+            'Strategy': strategy_metrics,
+            'Benchmark': benchmark_metrics
+        }
+        return comparison
+
+# File: components/backtesting_module/benchmark_strategy.py
+# Type: py
+
+# components/backtesting_module/benchmark_strategy.py
+
+import backtrader as bt
+
+class BenchmarkStrategy(bt.Strategy):
+    """
+    Simple buy and hold strategy for benchmark comparison.
+    """
+    
+    def __init__(self):
+        self.data_close = self.datas[0].close
+        self.bought = False
+        
+    def next(self):
+        if not self.bought:
+            self.buy()
+            self.bought = True
+
+# File: components/backtesting_module/config.py
+# Type: py
+
+# components/backtesting_module/config.py
+
+class BacktestConfig:
+    """Configuration for backtesting module"""
+    
+    # Database settings
+    DB_PATH = 'data/backtest_results.db'
+    
+    # Backtest settings
+    INITIAL_CASH = 100000.0
+    DEFAULT_COMMISSION = 0.001
+    BENCHMARK_TICKER = 'SPY'
+    
+    # Data settings
+    DEFAULT_TIMEFRAME = '1Day'
+    MIN_DATA_POINTS = 100
+    
+    # Resource limits
+    MAX_OPTIMIZATION_COMBINATIONS = 100
+    CPU_THRESHOLD = 80
+    MEMORY_THRESHOLD = 80
+
+# File: components/backtesting_module/exceptions.py
+# Type: py
+
+# components/backtesting_module/exceptions.py
+
+class BacktestError(Exception):
+    """Base exception for backtesting errors"""
+    pass
+
+class DataError(BacktestError):
+    """Exception for data-related errors"""
+    pass
+
+class StrategyError(BacktestError):
+    """Exception for strategy-related errors"""
+    pass
+
+class OptimizationError(BacktestError):
+    """Exception for optimization-related errors"""
+    pass
+
+
+# File: components/backtesting_module/formatters.py
+# Type: py
+
+# components/backtesting_module/formatters.py
+
+class ResultFormatter:
+    """
+    Formats backtest results for consistent presentation.
+    """
+    
+    @staticmethod
+    def format_metrics(metrics: dict) -> dict:
+        """
+        Formats performance metrics with proper rounding and labels.
+        """
+        return {
+            'Total Return': f"{metrics['Total Return']*100:.2f}%",
+            'Sharpe Ratio': f"{metrics['Sharpe Ratio']:.2f}",
+            'Max Drawdown': f"{metrics['Max Drawdown']:.2f}%",
+            'Final Value': f"${metrics['Final Portfolio Value']:,.2f}"
+        }
+    
+    @staticmethod
+    def format_optimization_results(results: list) -> list:
+        """
+        Formats optimization results for display.
+        """
+        formatted_results = []
+        for result in results:
+            formatted_results.append({
+                'Parameters': result['params'],
+                'Sharpe Ratio': f"{result['sharpe_ratio']:.2f}",
+                'Total Return': f"{result['total_return']*100:.2f}%",
+                'Max Drawdown': f"{result['max_drawdown']:.2f}%"
+            })
+        return formatted_results
+
+# File: components/backtesting_module/optimizer.py
+# Type: py
+
+# components/backtesting_module/optimizer.py
+
+import backtrader as bt
+from components.backtesting_module.strategy_adapters import StrategyAdapter
+from components.data_management_module.alpaca_api import AlpacaAPIClient
+from datetime import datetime
+import pandas as pd
+import logging
+from itertools import product
+
+logging.basicConfig(
+    filename='logs/optimizer.log',
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s:%(message)s'
+)
+
+class Optimizer:
+    """
+    Performs parameter optimization (grid search).
+    """
+
+    def __init__(self, strategy_name, ticker, start_date, end_date):
+        self.strategy_name = strategy_name
+        self.ticker = ticker
+        self.start_date = start_date
+        self.end_date = end_date
+        self.data = None
+        self.alpaca_client = AlpacaAPIClient()
+
+    def load_data(self):
+        """
+        Fetches historical data from the Alpaca API.
+        """
+        logging.info(f"Fetching data for {self.ticker} from {self.start_date} to {self.end_date}")
+        try:
+            self.data = self.alpaca_client.fetch_historical_data(
+                self.ticker,
+                self.start_date,
+                self.end_date,
+                timeframe='1Day'
+            )
+            if self.data.empty:
+                raise ValueError(f"No data found for ticker {self.ticker} between {self.start_date} and {self.end_date}")
+            self.data.rename(columns={
+                't': 'datetime',
+                'o': 'open',
+                'h': 'high',
+                'l': 'low',
+                'c': 'close',
+                'v': 'volume'
+            }, inplace=True)
+            self.data.set_index('datetime', inplace=True)
+            self.data.index = pd.to_datetime(self.data.index)
+        except Exception as e:
+            logging.error(f"Error fetching data: {e}")
+            raise
+
+    def run_optimization(self, param_ranges, cash=100000.0, commission=0.001, max_combinations=100):
+        self.load_data()
+        cerebro = bt.Cerebro(optreturn=False)
+        data_feed = bt.feeds.PandasData(dataname=self.data)
+        cerebro.adddata(data_feed)
+
+        # Generate parameter combinations
+        param_names = list(param_ranges.keys())
+        param_values = list(param_ranges.values())
+        combinations = list(product(*param_values))
+
+        # Limit combinations to prevent overload
+        if len(combinations) > max_combinations:
+            logging.warning(f"Limiting combinations to first {max_combinations} due to resource constraints.")
+            combinations = combinations[:max_combinations]
+
+        cerebro.optstrategy(
+            StrategyAdapter,
+            strategy_name=self.strategy_name,
+            strategy_params=[
+                dict(zip(param_names, combination)) for combination in combinations
+            ]
+        )
+        cerebro.broker.setcash(cash)
+        cerebro.broker.setcommission(commission=commission)
+        cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe')
+        cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
+        cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')
+        logging.info(f"Starting optimization for {self.strategy_name} on {self.ticker}")
+        optimized_runs = cerebro.run(maxcpus=1)
+        logging.info("Optimization completed.")
+        return self.collect_results(optimized_runs)
+
+    def collect_results(self, optimized_runs):
+        optimization_results = []
+        for run in optimized_runs:
+            for strategy in run:
+                params = strategy.params.strategy_params
+                sharpe = strategy.analyzers.sharpe.get_analysis().get('sharperatio', None)
+                drawdown = strategy.analyzers.drawdown.get_analysis()['max']['drawdown']
+                total_return = strategy.analyzers.returns.get_analysis()['rtot']
+                optimization_results.append({
+                    'params': params,
+                    'sharpe_ratio': sharpe,
+                    'max_drawdown': drawdown,
+                    'total_return': total_return
+                })
+        return optimization_results
+
+    def get_best_params(self, optimization_results, metric='sharpe_ratio'):
+        df = pd.DataFrame(optimization_results)
+        df = df.dropna(subset=[metric])
+        if df.empty:
+            raise ValueError("No valid optimization results to select best parameters.")
+        best_row = df.loc[df[metric].idxmax()]
+        return best_row['params']
+
+# File: components/backtesting_module/parameter_validator.py
+# Type: py
+
+# components/backtesting_module/parameter_validator.py
+
+import logging
+from typing import Dict, Any, List
+
+# components/backtesting_module/parameter_validator.py
+
+class ParameterValidator:
+    """
+    Validates strategy parameters and enforces optimization limits
+    """
+    # Default parameter ranges aligned with documentation
+    DEFAULT_RANGES = {
+        'MovingAverageCrossover': {
+            'short_window': {'min': 5, 'max': 15, 'step': 1},  # Documentation specifies smaller range
+            'long_window': {'min': 10, 'max': 20, 'step': 1}   # Documentation specifies smaller range
+        },
+        'RSIStrategy': {
+            'rsi_period': {'min': 5, 'max': 30, 'step': 5},
+            'oversold': {'min': 20, 'max': 40, 'step': 5},
+            'overbought': {'min': 60, 'max': 80, 'step': 5}
+        },
+        'MACDStrategy': {
+            'fast_period': {'min': 12, 'max': 16, 'step': 1},
+            'slow_period': {'min': 26, 'max': 30, 'step': 1},
+            'signal_period': {'min': 9, 'max': 12, 'step': 1}
+        },
+        'BollingerBandsStrategy': {
+            'window': {'min': 20, 'max': 30, 'step': 5},
+            'num_std': {'min': 2, 'max': 3, 'step': 0.5}
+        }
+    }
+       
+    @staticmethod
+    def validate_parameters(strategy_name: str, params: Dict[str, Any]) -> bool:
+        """
+        Validates that parameters are within acceptable ranges
+        """
+        if strategy_name not in ParameterValidator.DEFAULT_RANGES:
+            logging.warning(f"No validation rules for strategy: {strategy_name}")
+            return True
+            
+        ranges = ParameterValidator.DEFAULT_RANGES[strategy_name]
+        for param, value in params.items():
+            if param in ranges:
+                if value < ranges[param]['min'] or value > ranges[param]['max']:
+                    raise ValueError(
+                        f"Parameter {param} value {value} outside valid range "
+                        f"({ranges[param]['min']}-{ranges[param]['max']})"
+                    )
+        return True
+
+    @staticmethod
+    def generate_grid_parameters(strategy_name: str) -> Dict[str, List[float]]:
+        """
+        Generates parameter combinations for grid search within safe limits
+        """
+        if strategy_name not in ParameterValidator.DEFAULT_RANGES:
+            raise ValueError(f"No grid search parameters defined for {strategy_name}")
+            
+        ranges = ParameterValidator.DEFAULT_RANGES[strategy_name]
+        grid_params = {}
+        
+        for param, range_info in ranges.items():
+            values = list(range(
+                range_info['min'],
+                range_info['max'] + range_info['step'],
+                range_info['step']
+            ))
+            grid_params[param] = values
+            
+        return grid_params
+
+
+# File: components/backtesting_module/resource_monitor.py
+# Type: py
+
+# components/backtesting_module/resource_monitor.py
+
+import psutil
+import logging
+
+class ResourceMonitor:
+    """
+    Simple resource monitoring to prevent system overload during backtesting.
+    """
+    
+    @staticmethod
+    def check_resources():
+        """
+        Checks if system has enough resources for backtesting.
+        """
+        cpu_percent = psutil.cpu_percent()
+        memory_percent = psutil.virtual_memory().percent
+        
+        if cpu_percent > 80 or memory_percent > 80:
+            logging.warning(f"System resources stressed: CPU {cpu_percent}%, Memory {memory_percent}%")
+            raise ResourceWarning("System resources are too constrained for backtesting")
+            
+        return True
+
+    @staticmethod
+    def get_resource_usage():
+        """
+        Returns current resource usage statistics.
+        """
+        return {
+            'cpu_percent': psutil.cpu_percent(),
+            'memory_percent': psutil.virtual_memory().percent,
+            'disk_percent': psutil.disk_usage('/').percent
+        }
+
+# File: components/backtesting_module/results_viewer.py
+# Type: py
+
+# components/backtesting_module/results_viewer.py
+
+import pandas as pd
+import sqlite3
+import json
+from datetime import datetime
+
+class ResultsViewer:
+    """
+    Handles retrieval and visualization of backtest results.
+    """
+    
+    def __init__(self):
+        self.db_path = 'components/backtesting_module/results/backtest_results.db'
+    
+    def get_results(self, limit=10):
+        """
+        Retrieves the most recent backtest results.
+        """
+        conn = sqlite3.connect(self.db_path)
+        query = """
+            SELECT * FROM backtest_results 
+            ORDER BY timestamp DESC 
+            LIMIT ?
+        """
+        results = pd.read_sql_query(query, conn, params=(limit,))
+        conn.close()
+        
+        # Parse strategy parameters from JSON
+        results['strategy_params'] = results['strategy_params'].apply(json.loads)
+        return results
+
+    def get_specific_result(self, backtest_id):
+        """
+        Retrieves a specific backtest result.
+        """
+        conn = sqlite3.connect(self.db_path)
+        query = "SELECT * FROM backtest_results WHERE id = ?"
+        result = pd.read_sql_query(query, conn, params=(backtest_id,))
+        conn.close()
+        
+        if not result.empty:
+            result['strategy_params'] = result['strategy_params'].apply(json.loads)
+        return result
+
+# File: components/backtesting_module/strategies.py
+# Type: py
+
+# components/backtesting_module/strategies.py
+
+import backtrader as bt
+
+class MovingAverageCrossoverStrategy(bt.Strategy):
+    params = (
+        ('short_window', 10),
+        ('long_window', 20),
+    )
+
+    def __init__(self):
+        self.short_ma = bt.indicators.SMA(
+            self.data.close, period=self.params.short_window
+        )
+        self.long_ma = bt.indicators.SMA(
+            self.data.close, period=self.params.long_window
+        )
+        self.crossover = bt.indicators.CrossOver(self.short_ma, self.long_ma)
+
+    def next(self):
+        if self.crossover > 0:
+            self.buy()
+        elif self.crossover < 0:
+            self.sell()
+
+class RSIStrategy(bt.Strategy):
+    params = (
+        ('rsi_period', 14),
+        ('overbought', 70),
+        ('oversold', 30),
+    )
+
+    def __init__(self):
+        self.rsi = bt.indicators.RSI(
+            self.data.close, period=self.params.rsi_period
+        )
+
+    def next(self):
+        if self.rsi < self.params.oversold and not self.position:
+            self.buy()
+        elif self.rsi > self.params.overbought and self.position:
+            self.sell()
+
+class MACDStrategy(bt.Strategy):
+    params = (
+        ('fast_period', 12),
+        ('slow_period', 26),
+        ('signal_period', 9),
+    )
+
+    def __init__(self):
+        self.macd = bt.indicators.MACD(
+            self.data.close,
+            period_me1=self.params.fast_period,
+            period_me2=self.params.slow_period,
+            period_signal=self.params.signal_period
+        )
+
+    def next(self):
+        if self.macd.macd > self.macd.signal and not self.position:
+            self.buy()
+        elif self.macd.macd < self.macd.signal and self.position:
+            self.sell()
+
+class BollingerBandsStrategy(bt.Strategy):
+    params = (
+        ('period', 20),
+        ('devfactor', 2),
+    )
+
+    def __init__(self):
+        self.boll = bt.indicators.BollingerBands(
+            self.data.close, period=self.params.period, devfactor=self.params.devfactor
+        )
+
+    def next(self):
+        if self.data.close < self.boll.lines.bot and not self.position:
+            self.buy()
+        elif self.data.close > self.boll.lines.top and self.position:
+            self.sell()
+
+class MomentumStrategy(bt.Strategy):
+    params = (
+        ('momentum_period', 10),
+    )
+
+    def __init__(self):
+        self.momentum = bt.indicators.MomentumOscillator(
+            self.data.close, period=self.params.momentum_period
+        )
+
+    def next(self):
+        if self.momentum > 0 and not self.position:
+            self.buy()
+        elif self.momentum < 0 and self.position:
+            self.sell()
+
+# File: components/backtesting_module/strategy_adapter.py
+# Type: py
+
+# components/backtesting_module/strategy_adapters.py
+
+import backtrader as bt
+
+class MovingAverageCrossoverStrategy(bt.Strategy):
+    """Moving Average Crossover Strategy Implementation"""
+    
+    params = (
+        ('short_window', 10),
+        ('long_window', 20),
+    )
+
+    def __init__(self):
+        self.short_ma = bt.indicators.SMA(self.data.close, period=self.params.short_window)
+        self.long_ma = bt.indicators.SMA(self.data.close, period=self.params.long_window)
+        self.crossover = bt.indicators.CrossOver(self.short_ma, self.long_ma)
+
+    def next(self):
+        if self.crossover > 0:
+            self.buy()
+        elif self.crossover < 0:
+            self.sell()
+
+class RSIStrategy(bt.Strategy):
+    """RSI Strategy Implementation"""
+    
+    params = (
+        ('rsi_period', 14),
+        ('overbought', 70),
+        ('oversold', 30),
+    )
+
+    def __init__(self):
+        self.rsi = bt.indicators.RSI(self.data.close, period=self.params.rsi_period)
+
+    def next(self):
+        if self.rsi < self.params.oversold and not self.position:
+            self.buy()
+        elif self.rsi > self.params.overbought and self.position:
+            self.sell()
+
+class MACDStrategy(bt.Strategy):
+    """MACD Strategy Implementation"""
+    
+    params = (
+        ('fast_period', 12),
+        ('slow_period', 26),
+        ('signal_period', 9),
+    )
+
+    def __init__(self):
+        self.macd = bt.indicators.MACD(
+            self.data.close,
+            period_me1=self.params.fast_period,
+            period_me2=self.params.slow_period,
+            period_signal=self.params.signal_period
+        )
+
+    def next(self):
+        if self.macd.macd > self.macd.signal and not self.position:
+            self.buy()
+        elif self.macd.macd < self.macd.signal and self.position:
+            self.sell()
+
+class BollingerBandsStrategy(bt.Strategy):
+    """Bollinger Bands Strategy Implementation"""
+    
+    params = (
+        ('period', 20),
+        ('devfactor', 2),
+    )
+
+    def __init__(self):
+        self.boll = bt.indicators.BollingerBands(
+            self.data.close,
+            period=self.params.period,
+            devfactor=self.params.devfactor
+        )
+
+    def next(self):
+        if self.data.close < self.boll.lines.bot and not self.position:
+            self.buy()
+        elif self.data.close > self.boll.lines.top and self.position:
+            self.sell()
+
+class MomentumStrategy(bt.Strategy):
+    """Simple Momentum Strategy Implementation"""
+    
+    params = (
+        ('momentum_period', 10),
+    )
+
+    def __init__(self):
+        self.momentum = bt.indicators.MomentumOscillator(
+            self.data.close,
+            period=self.params.momentum_period
+        )
+
+    def next(self):
+        if self.momentum > 0 and not self.position:
+            self.buy()
+        elif self.momentum < 0 and self.position:
+            self.sell()
+
+class StrategyAdapter:
+    """
+    Strategy adapter that maps strategy names to their implementations.
+    """
+    
+    STRATEGIES = {
+        'MovingAverageCrossover': MovingAverageCrossoverStrategy,
+        'RSI': RSIStrategy,
+        'MACD': MACDStrategy,
+        'BollingerBands': BollingerBandsStrategy,
+        'Momentum': MomentumStrategy
+    }
+
+    @staticmethod
+    def get_strategy(name):
+        """
+        Get strategy class by name.
+        
+        Args:
+            name (str): Name of the strategy
+            
+        Returns:
+            bt.Strategy: Strategy class
+            
+        Raises:
+            ValueError: If strategy name is not found
+        """
+        if name not in StrategyAdapter.STRATEGIES:
+            raise ValueError(f"Strategy '{name}' not found. Available strategies: {list(StrategyAdapter.STRATEGIES.keys())}")
+        return StrategyAdapter.STRATEGIES[name]
+
+# File: components/backtesting_module/utils.py
+# Type: py
+
+# components/backtesting_module/utils.py
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+
+def validate_backtest_data(data):
+    """
+    Validates that data meets minimum requirements for backtesting.
+    """
+    if data is None or len(data) < BacktestConfig.MIN_DATA_POINTS:
+        raise DataError(f"Insufficient data points. Minimum required: {BacktestConfig.MIN_DATA_POINTS}")
+    
+    required_columns = ['open', 'high', 'low', 'close', 'volume']
+    missing_columns = [col for col in required_columns if col not in data.columns]
+    if missing_columns:
+        raise DataError(f"Missing required columns: {missing_columns}")
+
+def calculate_statistics(returns):
+    """
+    Calculates additional performance statistics.
+    """
+    stats = {
+        'total_return': (returns + 1).prod() - 1,
+        'annual_return': (returns + 1).prod() ** (252/len(returns)) - 1,
+        'volatility': returns.std() * np.sqrt(252),
+        'max_drawdown': calculate_max_drawdown(returns),
+        'win_rate': (returns > 0).mean()
+    }
+    return stats
+
+def calculate_max_drawdown(returns):
+    """
+    Calculates maximum drawdown from returns series.
+    """
+    cum_returns = (1 + returns).cumprod()
+    rolling_max = cum_returns.expanding(min_periods=1).max()
+    drawdowns = cum_returns/rolling_max - 1
+    return drawdowns.min()
+

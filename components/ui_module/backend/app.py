@@ -513,6 +513,9 @@ def get_dashboard_data():
             'success': False,
             'message': str(e)
         }), 500
+        
+        
+
 
 if __name__ == '__main__':
     initialize_app()

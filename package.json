@@ -12,6 +12,7 @@
   "dependencies": {
     "@heroicons/react": "^2.2.0",
     "@tailwindcss/forms": "^0.5.9",
+    "lucide-react": "^0.468.0",
     "recharts": "^2.14.1"
   },
   "devDependencies": {

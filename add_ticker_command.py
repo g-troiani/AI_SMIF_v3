@@ -1,4 +1,5 @@
 # add_ticker_command.py
+
 import zmq
 import sys
 import time

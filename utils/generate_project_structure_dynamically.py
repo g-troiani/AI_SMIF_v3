@@ -1,3 +1,5 @@
+# generate_project_structure_dynamically.py
+
 import os
 import json
 from typing import Dict, Optional
