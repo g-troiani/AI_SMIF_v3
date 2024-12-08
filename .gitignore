@@ -28,4 +28,6 @@ config/*.ini
 # OS
 .DS_Store
 Thumbs.db
-node_modules
+
+# Node_modules
+node_modules/
