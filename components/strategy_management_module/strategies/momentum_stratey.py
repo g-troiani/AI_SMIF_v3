@@ -1,4 +1,6 @@
 # File: components/strategy_management_module/strategies/momentum_strategy.py
+# Type: py
+
 from components.strategy_management_module.strategies.strategy_base import StrategyBase
 import pandas as pd
 
@@ -11,13 +13,11 @@ class MomentumStrategy(StrategyBase):
     }
 
     def __init__(self, params=None):
-        """Initialize strategy with parameters."""
         if params is None:
             params = self.default_params
         super().__init__(params)
 
     def validate_params(self):
-        """Validate strategy parameters."""
         lookback_period = self.params.get('lookback_period')
         threshold = self.params.get('threshold')
 
@@ -27,7 +27,6 @@ class MomentumStrategy(StrategyBase):
             raise ValueError("threshold must be a number")
 
     def generate_signals(self, data):
-        """Generate trading signals."""
         momentum = data['close'].pct_change(periods=self.params['lookback_period'])
         
         signals = pd.DataFrame(index=data.index)

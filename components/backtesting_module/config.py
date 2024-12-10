@@ -1,4 +1,5 @@
-# components/backtesting_module/config.py
+# File: components/backtesting_module/config.py
+# Type: py
 
 class BacktestConfig:
     """Configuration for backtesting module"""
@@ -8,11 +9,11 @@ class BacktestConfig:
     
     # Backtest settings
     INITIAL_CASH = 100000.0
-    DEFAULT_COMMISSION = 0.001
+    DEFAULT_COMMISSION = 0.000
     BENCHMARK_TICKER = 'SPY'
     
     # Data settings
-    DEFAULT_TIMEFRAME = '1Day'
+    DEFAULT_TIMEFRAME = '5Min'
     MIN_DATA_POINTS = 100
     
     # Resource limits

@@ -1,4 +1,6 @@
 # File: components/strategy_management_module/strategies/macd_strategy.py
+# Type: py
+
 from components.strategy_management_module.strategies.strategy_base import StrategyBase
 import pandas as pd
 
@@ -12,13 +14,11 @@ class MACDStrategy(StrategyBase):
     }
 
     def __init__(self, params=None):
-        """Initialize strategy with parameters."""
         if params is None:
             params = self.default_params
         super().__init__(params)
 
     def validate_params(self):
-        """Validate strategy parameters."""
         fast_period = self.params.get('fast_period')
         slow_period = self.params.get('slow_period')
         signal_period = self.params.get('signal_period')
@@ -30,14 +30,10 @@ class MACDStrategy(StrategyBase):
             raise ValueError("fast_period must be less than slow_period")
 
     def generate_signals(self, data):
-        """Generate trading signals."""
-        exp1 = data['close'].ewm(span=self.params['fast_period'], 
-                                adjust=False).mean()
-        exp2 = data['close'].ewm(span=self.params['slow_period'], 
-                                adjust=False).mean()
+        exp1 = data['close'].ewm(span=self.params['fast_period'], adjust=False).mean()
+        exp2 = data['close'].ewm(span=self.params['slow_period'], adjust=False).mean()
         macd = exp1 - exp2
-        signal_line = macd.ewm(span=self.params['signal_period'], 
-                              adjust=False).mean()
+        signal_line = macd.ewm(span=self.params['signal_period'], adjust=False).mean()
         
         signals = pd.DataFrame(index=data.index)
         signals['signal'] = 0.0

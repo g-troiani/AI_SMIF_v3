@@ -1,4 +1,5 @@
-# components/backtesting_module/formatters.py
+# File: components/backtesting_module/formatters.py
+# Type: py
 
 class ResultFormatter:
     """
@@ -12,7 +13,7 @@ class ResultFormatter:
         """
         return {
             'Total Return': f"{metrics['Total Return']*100:.2f}%",
-            'Sharpe Ratio': f"{metrics['Sharpe Ratio']:.2f}",
+            'Sharpe Ratio': f"{metrics['Sharpe Ratio']:.2f}" if metrics['Sharpe Ratio'] is not None else 'N/A',
             'Max Drawdown': f"{metrics['Max Drawdown']:.2f}%",
             'Final Value': f"${metrics['Final Portfolio Value']:,.2f}"
         }
@@ -24,9 +25,10 @@ class ResultFormatter:
         """
         formatted_results = []
         for result in results:
+            sr = result['sharpe_ratio']
             formatted_results.append({
                 'Parameters': result['params'],
-                'Sharpe Ratio': f"{result['sharpe_ratio']:.2f}",
+                'Sharpe Ratio': f"{sr:.2f}" if sr is not None else 'N/A',
                 'Total Return': f"{result['total_return']*100:.2f}%",
                 'Max Drawdown': f"{result['max_drawdown']:.2f}%"
             })

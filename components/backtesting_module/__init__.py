@@ -1,4 +1,6 @@
-# In __init__.py
+# File: components/backtesting_module/__init__.py
+# Type: py
+
 import os
 
 # Create necessary directories

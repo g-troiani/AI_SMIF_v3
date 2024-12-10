@@ -11,7 +11,7 @@ def should_exclude_file(filename):
         '.log', '.env', '.gitignore', '.DS_Store', 'Thumbs.db',
         '__pycache__', '.pyc', '.pyo', '.pyd', '.db', '.sqlite',
         '.swp', '.swo', '~', '.egg-info', 'venv', 'node_modules', '.git',
-        '.idea', '.vscode', 'env', 'dist', 'build',
+        '.idea', '.vscode', 'env', 'dist', 'build', '__pycache__.txt', '___pycache__',
         '.mypy_cache', '.pytest_cache', '.ipynb_checkpoints'
     ]
     return any(filename.endswith(pattern) or pattern in filename for pattern in exclude_patterns)

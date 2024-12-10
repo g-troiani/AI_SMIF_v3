@@ -60,7 +60,7 @@ def debug_port_usage(port):
     # Get process info without 'connections' attribute in process_iter
     for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
         try:
-            conns = proc.connections()
+            conns = proc.net_connections()
             for conn in conns:
                 if conn.laddr.port == port:
                     print(f"Process {proc.pid} ({proc.name()}) is using port {port}")

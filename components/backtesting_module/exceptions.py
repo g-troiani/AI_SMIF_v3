@@ -1,4 +1,5 @@
-# components/backtesting_module/exceptions.py
+# File: components/backtesting_module/exceptions.py
+# Type: py
 
 class BacktestError(Exception):
     """Base exception for backtesting errors"""

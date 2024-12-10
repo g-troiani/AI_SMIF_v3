@@ -1,8 +1,11 @@
-# components/backtesting_module/utils.py
+# File: components/backtesting_module/utils.py
+# Type: py
 
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+from .config import BacktestConfig
+from .exceptions import DataError
 
 def validate_backtest_data(data):
     """
@@ -10,7 +13,7 @@ def validate_backtest_data(data):
     """
     if data is None or len(data) < BacktestConfig.MIN_DATA_POINTS:
         raise DataError(f"Insufficient data points. Minimum required: {BacktestConfig.MIN_DATA_POINTS}")
-    
+
     required_columns = ['open', 'high', 'low', 'close', 'volume']
     missing_columns = [col for col in required_columns if col not in data.columns]
     if missing_columns:
@@ -22,10 +25,10 @@ def calculate_statistics(returns):
     """
     stats = {
         'total_return': (returns + 1).prod() - 1,
-        'annual_return': (returns + 1).prod() ** (252/len(returns)) - 1,
-        'volatility': returns.std() * np.sqrt(252),
+        'annual_return': (returns + 1).prod() ** (252/len(returns)) - 1 if len(returns) > 0 else np.nan,
+        'volatility': returns.std() * np.sqrt(252) if len(returns) > 0 else np.nan,
         'max_drawdown': calculate_max_drawdown(returns),
-        'win_rate': (returns > 0).mean()
+        'win_rate': (returns > 0).mean() if len(returns) > 0 else np.nan
     }
     return stats
 

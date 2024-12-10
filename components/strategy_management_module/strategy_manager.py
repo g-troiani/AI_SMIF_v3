@@ -1,19 +1,17 @@
-# components/backtesting_module/parameter_validator.py
+# File: components/strategy_management_module/strategy_manager.py
+# Type: py
 
 import logging
 from typing import Dict, Any, List
-
-# components/backtesting_module/parameter_validator.py
 
 class ParameterValidator:
     """
     Validates strategy parameters and enforces optimization limits
     """
-    # Default parameter ranges aligned with documentation
     DEFAULT_RANGES = {
         'MovingAverageCrossover': {
-            'short_window': {'min': 5, 'max': 15, 'step': 1},  # Documentation specifies smaller range
-            'long_window': {'min': 10, 'max': 20, 'step': 1}   # Documentation specifies smaller range
+            'short_window': {'min': 5, 'max': 15, 'step': 1},
+            'long_window': {'min': 10, 'max': 20, 'step': 1}
         },
         'RSIStrategy': {
             'rsi_period': {'min': 5, 'max': 30, 'step': 5},
@@ -33,9 +31,6 @@ class ParameterValidator:
        
     @staticmethod
     def validate_parameters(strategy_name: str, params: Dict[str, Any]) -> bool:
-        """
-        Validates that parameters are within acceptable ranges
-        """
         if strategy_name not in ParameterValidator.DEFAULT_RANGES:
             logging.warning(f"No validation rules for strategy: {strategy_name}")
             return True
@@ -52,9 +47,6 @@ class ParameterValidator:
 
     @staticmethod
     def generate_grid_parameters(strategy_name: str) -> Dict[str, List[float]]:
-        """
-        Generates parameter combinations for grid search within safe limits
-        """
         if strategy_name not in ParameterValidator.DEFAULT_RANGES:
             raise ValueError(f"No grid search parameters defined for {strategy_name}")
             

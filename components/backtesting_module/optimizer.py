@@ -1,7 +1,8 @@
-# components/backtesting_module/optimizer.py
+# File: components/backtesting_module/optimizer.py
+# Type: py
 
 import backtrader as bt
-from components.backtesting_module.strategy_adapters import StrategyAdapter
+from components.backtesting_module.backtrader.strategy_adapters import StrategyAdapter
 from components.data_management_module.alpaca_api import AlpacaAPIClient
 from datetime import datetime
 import pandas as pd
@@ -66,7 +67,7 @@ class Optimizer:
         param_values = list(param_ranges.values())
         combinations = list(product(*param_values))
 
-        # Limit combinations to prevent overload
+        # Limit combinations if too large
         if len(combinations) > max_combinations:
             logging.warning(f"Limiting combinations to first {max_combinations} due to resource constraints.")
             combinations = combinations[:max_combinations]

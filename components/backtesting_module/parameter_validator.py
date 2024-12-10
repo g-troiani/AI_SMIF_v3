@@ -1,9 +1,8 @@
-# components/backtesting_module/parameter_validator.py
+# File: components/backtesting_module/parameter_validator.py
+# Type: py
 
 import logging
 from typing import Dict, Any, List
-
-# components/backtesting_module/parameter_validator.py
 
 class ParameterValidator:
     """
@@ -12,8 +11,8 @@ class ParameterValidator:
     # Default parameter ranges aligned with documentation
     DEFAULT_RANGES = {
         'MovingAverageCrossover': {
-            'short_window': {'min': 5, 'max': 15, 'step': 1},  # Documentation specifies smaller range
-            'long_window': {'min': 10, 'max': 20, 'step': 1}   # Documentation specifies smaller range
+            'short_window': {'min': 5, 'max': 15, 'step': 1},
+            'long_window': {'min': 10, 'max': 20, 'step': 1}
         },
         'RSIStrategy': {
             'rsi_period': {'min': 5, 'max': 30, 'step': 5},
@@ -30,16 +29,13 @@ class ParameterValidator:
             'num_std': {'min': 2, 'max': 3, 'step': 0.5}
         }
     }
-       
+
     @staticmethod
     def validate_parameters(strategy_name: str, params: Dict[str, Any]) -> bool:
-        """
-        Validates that parameters are within acceptable ranges
-        """
         if strategy_name not in ParameterValidator.DEFAULT_RANGES:
             logging.warning(f"No validation rules for strategy: {strategy_name}")
             return True
-            
+
         ranges = ParameterValidator.DEFAULT_RANGES[strategy_name]
         for param, value in params.items():
             if param in ranges:
@@ -52,21 +48,28 @@ class ParameterValidator:
 
     @staticmethod
     def generate_grid_parameters(strategy_name: str) -> Dict[str, List[float]]:
-        """
-        Generates parameter combinations for grid search within safe limits
-        """
         if strategy_name not in ParameterValidator.DEFAULT_RANGES:
             raise ValueError(f"No grid search parameters defined for {strategy_name}")
-            
+
         ranges = ParameterValidator.DEFAULT_RANGES[strategy_name]
         grid_params = {}
-        
+
         for param, range_info in ranges.items():
-            values = list(range(
-                range_info['min'],
-                range_info['max'] + range_info['step'],
-                range_info['step']
-            ))
+            # Handling step as int or float
+            step = range_info['step']
+            start = range_info['min']
+            stop = range_info['max'] + step if isinstance(step, int) else range_info['max'] + step/10.0
+
+            if isinstance(step, int):
+                values = list(range(start, int(stop), step))
+            else:
+                # Generate float range
+                values = []
+                current = start
+                while current <= range_info['max']:
+                    values.append(round(current, 2))
+                    current += step
+
             grid_params[param] = values
-            
+
         return grid_params
