@@ -36,6 +36,7 @@ class DataManager:
         self._last_maintenance = None
         self._running = True        # for clean shutdown
         self._setup_command_socket() # set up command handling first
+        self._init_modeling_db()
         self.initialize_database()         # Then initialize other components
         self.start_real_time_streaming()        # Then initialize other components
         self.logger.info("DataManager initialized.")        # for clean shutdown
@@ -63,14 +64,21 @@ class DataManager:
 
 
     def _save_historical_data(self, ticker, df):
-        """Store historical data in the database"""
+        """Store historical data in the database and then update modeling_data."""
         with self.lock:
             session = db_manager.Session()
             try:
+                # Check if df is empty
+                if df.empty:
+                    return
+
+                # Determine the time range of new data
+                min_ts = df.index.min()
+                max_ts = df.index.max()
+
                 records = []
                 for index, row in df.iterrows():
                     try:
-                        # Updated column names to match DataFrame
                         HistoricalData.validate_price_data(
                             row['open'], row['high'], row['low'], row['close'], row['volume']
                         )
@@ -89,7 +97,7 @@ class DataManager:
                         print(f"CRITICAL DEBUG: Skipping invalid data point for {ticker}: {str(e)}")
 
                 if records:
-                    batch_size = config.get_int('DEFAULT', 'batch_size')  # Use batch_size from config
+                    batch_size = config.get_int('DEFAULT', 'batch_size')
                     num_records = len(records)
                     print(f"CRITICAL DEBUG: Attempting to save {num_records} records for {ticker}")
 
@@ -103,6 +111,7 @@ class DataManager:
                             session.rollback()
                             self.logger.warning(f"IntegrityError when saving batch {i//batch_size +1} for {ticker}: {str(ie)}")
                             print(f"CRITICAL DEBUG: IntegrityError when saving batch {i//batch_size +1} for {ticker}: {str(ie)}")
+                            continue
                         except Exception as e:
                             session.rollback()
                             self.logger.error(f"Exception when saving batch {i//batch_size +1} for {ticker}: {str(e)}")
@@ -112,7 +121,10 @@ class DataManager:
 
                 self.logger.info(f"Stored {len(records)} records for {ticker}")
                 print(f"CRITICAL DEBUG: Stored {len(records)} records for {ticker}")
-                    
+                
+                # Call _update_modeling_data after storing data
+                self._update_modeling_data(ticker, min_ts, max_ts)
+                        
             except Exception as e:
                 session.rollback()
                 self.logger.error(f"Database error for {ticker}: {str(e)}")
@@ -121,6 +133,7 @@ class DataManager:
             finally:
                 session.close()
                 print("CRITICAL DEBUG: Database session closed.")
+
 
                     
     def _filter_market_hours(self, data, timezone):
@@ -698,3 +711,120 @@ class DataManager:
             self.logger.error(f"Error initializing database: {str(e)}")
             print(f"CRITICAL DEBUG: Error during initialization: {str(e)}")
             raise
+        
+        
+    def _update_modeling_data(self, ticker, start_ts, end_ts):
+        """
+        Update modeling_data.db with new features for the given ticker and time range.
+        """
+        import sqlite3
+        import numpy as np
+
+        WINDOW = 14
+        buffer_start = start_ts - timedelta(days=WINDOW)
+
+        market_db_path = Path(config.get('DEFAULT', 'database_path'))
+        if not market_db_path.exists():
+            self.logger.error("market_data.db not found, cannot update modeling data.")
+            return
+
+        conn = sqlite3.connect(market_db_path)
+        query = f"""
+        SELECT ticker_symbol, timestamp, open, high, low, close, volume
+        FROM historical_data
+        WHERE ticker_symbol = '{ticker}'
+        AND timestamp BETWEEN '{buffer_start.isoformat()}' AND '{end_ts.isoformat()}'
+        ORDER BY timestamp ASC
+        """
+        df = pd.read_sql_query(query, conn, parse_dates=['timestamp'])
+        conn.close()
+
+        if df.empty:
+            self.logger.info(f"No market data for {ticker} in the given range.")
+            return
+
+        df.set_index('timestamp', inplace=True)
+        df['return'] = np.log(df['close'] / df['close'].shift(1))
+        df['vol'] = df['return'].rolling(WINDOW).std()
+        df['mom'] = np.sign(df['return'].rolling(WINDOW).mean())
+        df['sma'] = df['close'].rolling(WINDOW).mean()
+        df['rolling_min'] = df['close'].rolling(WINDOW).min()
+        df['rolling_max'] = df['close'].rolling(WINDOW).max()
+        df['diff_close'] = df['close'].diff()
+
+        df.dropna(inplace=True)
+        if df.empty:
+            self.logger.info(f"No sufficient data for feature calculation for {ticker}.")
+            return
+
+        ny_tz = pytz.timezone('America/New_York')
+
+        # Localize df.index to America/New_York if it's naive
+        if df.index.tzinfo is None:
+            df.index = df.index.tz_localize(ny_tz)
+
+        # Convert start_ts to America/New_York as well
+        if start_ts.tzinfo is not None:
+            start_ts = start_ts.astimezone(ny_tz)
+        else:
+            start_ts = ny_tz.localize(start_ts)
+        
+        # Filter to the actual [start_ts, end_ts] range
+        df = df.loc[df.index >= start_ts]
+
+        df['ticker_symbol'] = ticker
+        df.reset_index(inplace=True)
+
+        modeling_db_path = Path('data/modeling_data.db')
+        conn = sqlite3.connect(modeling_db_path)
+        df.to_sql('temp_modeling_data', conn, if_exists='replace', index=False)
+
+        upsert_sql = """
+        INSERT OR REPLACE INTO modeling_data
+        (ticker_symbol, timestamp, open, high, low, close, volume, return, vol, mom, sma, rolling_min, rolling_max, diff_close)
+        SELECT ticker_symbol, timestamp, open, high, low, close, volume, return, vol, mom, sma, rolling_min, rolling_max, diff_close
+        FROM temp_modeling_data;
+        """
+
+        conn.execute(upsert_sql)
+        conn.commit()
+        conn.close()
+
+        self.logger.info(f"Modeling data updated for {ticker} from {start_ts} to {end_ts}.")
+        
+        
+    def _init_modeling_db(self):
+        from pathlib import Path
+        import sqlite3
+
+        modeling_db_path = Path('data/modeling_data.db')
+        modeling_db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        conn = sqlite3.connect(modeling_db_path)
+        cur = conn.cursor()
+
+        create_table_sql = """
+        CREATE TABLE IF NOT EXISTS modeling_data (
+            ticker_symbol TEXT,
+            timestamp DATETIME,
+            open REAL,
+            high REAL,
+            low REAL,
+            close REAL,
+            volume INTEGER,
+            return REAL,
+            vol REAL,
+            mom REAL,
+            sma REAL,
+            rolling_min REAL,
+            rolling_max REAL,
+            diff_close REAL,
+            PRIMARY KEY (ticker_symbol, timestamp)
+        ) WITHOUT ROWID;
+        """
+        cur.execute(create_table_sql)
+        conn.commit()
+        conn.close()
+
+        self.logger.info("modeling_data table successfully initialized.")
+

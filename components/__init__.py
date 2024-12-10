@@ -1,4 +1,5 @@
-# /home/gian/Desktop/MDC program/ai_smif/ai_smif/ai_smif_v2/components/__init__.py
+# File: components/__init__.py
+# Type: py
 
 from .trading_execution_engine import (
     ExecutionEngine,
@@ -13,3 +14,10 @@ __all__ = [
     'AlpacaAPIClient',
     'OrderManager'
 ]
+
+
+"""
+Initialize the 'components' package.
+This file ensures that the 'components' directory is recognized as a Python package,
+allowing relative imports for modules within it.
+"""
