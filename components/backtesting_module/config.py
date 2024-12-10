@@ -5,7 +5,7 @@ class BacktestConfig:
     """Configuration for backtesting module"""
     
     # Database settings
-    DB_PATH = 'data/backtest_results.db'
+    DB_PATH = 'data/results/backtest_results.db'
     
     # Backtest settings
     INITIAL_CASH = 100000.0

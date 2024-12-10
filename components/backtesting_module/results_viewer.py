@@ -12,7 +12,7 @@ class ResultsViewer:
     """
     
     def __init__(self):
-        self.db_path = 'components/backtesting_module/results/backtest_results.db'
+        self.db_path = 'data/results/backtest_results.db'
     
     def get_results(self, limit=10):
         conn = sqlite3.connect(self.db_path)

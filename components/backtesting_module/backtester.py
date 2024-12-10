@@ -267,7 +267,8 @@ class Backtester:
                            std_dev, annual_vol, sharpe_ratio, sortino_ratio, max_drawdown,
                            win_rate, alpha, num_trades, information_ratio):
         
-        conn = sqlite3.connect('backtesting_results.db')
+        # Use data/backtesting_results.db for the main summary database
+        conn = sqlite3.connect('data/backtesting_results.db')
         cursor = conn.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS backtest_summary (
@@ -291,17 +292,23 @@ class Backtester:
                 alpha REAL,
                 num_trades INTEGER,
                 information_ratio REAL,
+                strategy_unique_id TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+
+        # Generate a unique identifier by combining strategy_name, ticker, params, and timestamp
+        param_str = "_".join([f"{k}{v}" for k, v in sorted(strategy_params.items())])
+        run_timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+        unique_id = f"{strategy_name}_{ticker}_{param_str}_{run_timestamp}"
 
         cursor.execute('''
             INSERT INTO backtest_summary (
                 strategy_name, strategy_params, ticker, start_date, end_date,
                 final_value, total_pl, total_pct_change, cagr, total_return,
                 std_dev, annual_vol, sharpe_ratio, sortino_ratio, max_drawdown,
-                win_rate, alpha, num_trades, information_ratio
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                win_rate, alpha, num_trades, information_ratio, strategy_unique_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             strategy_name,
             json.dumps(strategy_params),
@@ -321,7 +328,8 @@ class Backtester:
             win_rate,
             alpha,
             num_trades,
-            information_ratio
+            information_ratio,
+            unique_id
         ))
         conn.commit()
         conn.close()
@@ -353,9 +361,9 @@ class Backtester:
 
 
     def save_results(self, plot_filename=None):
-        if not os.path.exists('components/backtesting_module/results'):
-            os.makedirs('components/backtesting_module/results')
-        conn = sqlite3.connect('components/backtesting_module/results/backtest_results.db')
+        if not os.path.exists('data/results'):
+            os.makedirs('data/results')
+        conn = sqlite3.connect('data/results/backtest_results.db')
         cursor = conn.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS backtest_results (
@@ -480,7 +488,7 @@ class Backtester:
         return metrics
 
     def save_plot_filename(self, plot_filename):
-        with sqlite3.connect('backtesting_results.db') as conn:
+        with sqlite3.connect('data/backtesting_results.db') as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS backtest_plots (
