@@ -59,23 +59,22 @@ class RealTimeDataStreamer:
                 return
 
             # Convert bar.timestamp from nanoseconds to datetime
-            bar.timestamp = datetime.datetime.fromtimestamp(bar.timestamp / 1e9, tz=pytz.UTC)
-            #bar.timestamp = datetime.datetime.fromtimestamp(bar.timestamp / 1e9, tz=pytz.UTC)
-
+            bar.timestamp = datetime.fromtimestamp(bar.timestamp / 1e9, tz=pytz.timezone('America/New_York'))
+            # bar.timestamp = datetime.fromtimestamp(bar.timestamp / 1e9, tz=pytz.UTC)
             # Get the minute of the timestamp
             minute = bar.timestamp.minute
 
             # UNCOMMENT THIS TO STORE 5 MINUTE BARS
             # Check if the minute is a multiple of 5
-            # if minute % 5 == 0:
-            #     # Process the bar
-            #     self._store_bar_data(bar)
-            #     self._publish_bar_data(bar)
-            #     self._last_update[bar.symbol] = bar.timestamp
-            #     self._last_prices[bar.symbol] = bar.close
-            # else:
-            #     # Do not process the bar
-            #     pass
+            if minute % 5 == 0:
+                # Process the bar
+                self._store_bar_data(bar)
+                self._publish_bar_data(bar)
+                self._last_update[bar.symbol] = bar.timestamp
+                self._last_prices[bar.symbol] = bar.close
+            else:
+                # Do not process the bar
+                pass
 
         except Exception as e:
             self.logger.error(f"Error processing bar data: {str(e)}")

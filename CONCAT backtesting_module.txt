@@ -1,0 +1,1620 @@
+# Module: backtesting_module
+
+# File: components/backtesting_module/__init__.py
+# Type: py
+
+# File: components/backtesting_module/__init__.py
+# Type: py
+
+import os
+
+# Create necessary directories
+os.makedirs('logs', exist_ok=True)
+os.makedirs('data', exist_ok=True)
+
+
+# File: components/backtesting_module/backtester.py
+# Type: py
+
+import backtrader as bt
+import pandas as pd
+import sqlite3
+import json
+import logging
+import os
+from datetime import datetime
+from .config import BacktestConfig
+from .exceptions import BacktestError, DataError
+from .utils import validate_backtest_data
+from components.backtesting_module.backtrader.benchmark_strategy import BenchmarkStrategy
+from components.backtesting_module.backtrader.strategy_adapters import StrategyAdapter
+from math import sqrt
+import math
+import matplotlib
+matplotlib.use('Agg')  # Use Agg backend for environments without a display
+import matplotlib.pyplot as plt
+plt.rcParams['figure.figsize'] = (12, 6)
+plt.style.use('ggplot')  # a nice built-in style if you want a pretty look
+
+logging.basicConfig(
+    filename='logs/backtesting.log',
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s:%(message)s'
+)
+
+class AllInSizer(bt.Sizer):
+    """
+    A sizer that invests all available cash into the position on buy signals.
+    """
+    def _getsizing(self, comminfo, cash, data, isbuy):
+        if isbuy:
+            size = int(cash / data.close[0])
+            return size if size > 0 else 0
+        else:
+            position = self.broker.getposition(data)
+            return position.size
+
+class PercentageInvestedObserver(bt.Observer):
+    """
+    Observer that prints the percentage of capital invested in the asset at each bar.
+    """
+    lines = ('percent_invested',)
+    plotinfo = dict(plot=False)
+
+    def next(self):
+        value = self._owner.broker.getvalue()
+        cash = self._owner.broker.getcash()
+        invested_percent = (value - cash) / value * 100.0
+        self.lines.percent_invested[0] = invested_percent
+        current_date = self.datas[0].datetime.datetime(0)
+        print(f"Date: {current_date}, Percent Invested: {invested_percent:.2f}%")
+
+class Backtester:
+    """
+    Runs backtests using historical data and strategies from a local SQLite database.
+    """
+
+    def __init__(self, strategy_name, strategy_params, ticker, start_date=None, end_date=None, db_path='data/market_data.db', percent_invest=100,
+                 stop_loss=0.0, take_profit=0.0):
+        self.strategy_name = strategy_name
+        self.strategy_params = strategy_params
+        self.ticker = ticker
+        self.start_date = start_date
+        self.end_date = end_date
+        self.data = None
+        self.results = None
+        self.final_value = None
+        self.db_path = db_path
+        self.percent_invest = percent_invest
+        self.stop_loss = stop_loss
+        self.take_profit = take_profit
+
+        self._set_default_dates_if_needed()
+
+
+    def _set_default_dates_if_needed(self):
+        conn = sqlite3.connect(self.db_path)
+        query = """
+            SELECT MIN(timestamp) as min_ts, MAX(timestamp) as max_ts
+            FROM historical_data
+            WHERE ticker_symbol = ?
+        """
+        row = conn.execute(query, (self.ticker,)).fetchone()
+        conn.close()
+
+        if not row or row[0] is None or row[1] is None:
+            raise DataError(f"No data found for ticker {self.ticker} in the database.")
+
+        min_ts, max_ts = row
+        min_ts = pd.to_datetime(min_ts)
+        max_ts = pd.to_datetime(max_ts)
+
+        if self.start_date is None:
+            self.start_date = min_ts
+        if self.end_date is None:
+            self.end_date = max_ts
+
+        logging.info(f"Date range set to {self.start_date} - {self.end_date} for {self.ticker}")
+
+    def load_data(self):
+        logging.info(f"Loading data for {self.ticker} from {self.start_date} to {self.end_date}")
+
+        start_str = self.start_date.strftime('%Y-%m-%d %H:%M:%S')
+        end_str = self.end_date.strftime('%Y-%m-%d %H:%M:%S')
+
+        conn = sqlite3.connect(self.db_path)
+        query = """
+            SELECT timestamp, open, high, low, close, volume
+            FROM historical_data
+            WHERE ticker_symbol = ?
+              AND timestamp >= ?
+              AND timestamp <= ?
+            ORDER BY timestamp ASC
+        """
+        df = pd.read_sql(query, conn, params=(self.ticker, start_str, end_str))
+        conn.close()
+
+        if df.empty:
+            raise DataError(f"No data found for {self.ticker} between {self.start_date} and {self.end_date}")
+
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df.set_index('timestamp', inplace=True)
+
+        self.data = df
+        logging.info(f"Data loaded: {len(self.data)} rows.")
+        print("Data Loaded:")
+        print("First Rows:\n", self.data.head())
+        print("Last Rows:\n", self.data.tail())
+        print(f"Date Range for the test: {self.start_date} to {self.end_date}")
+        print(f"Total bars: {len(self.data)}")
+
+    def run_backtest(self, cash=100000.0, commission=0.0):
+        try:
+            self.load_data()
+            validate_backtest_data(self.data)
+            cerebro = bt.Cerebro()
+
+            data_feed = bt.feeds.PandasData(
+                dataname=self.data,
+                timeframe=bt.TimeFrame.Minutes,
+                compression=5
+            )
+            cerebro.adddata(data_feed)
+
+            # Add strategy with stop_loss and take_profit as params
+            strategy_class = StrategyAdapter.get_strategy(self.strategy_name)
+            cerebro.addstrategy(strategy_class, stop_loss=self.stop_loss, take_profit=self.take_profit, **self.strategy_params)
+
+            cerebro.addsizer(bt.sizers.PercentSizer, percents=self.percent_invest)
+            cerebro.broker.setcash(cash)
+            cerebro.broker.setcommission(commission=commission)
+            cerebro.broker.set_slippage_perc(0.0)
+
+            # Add analyzers
+            cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe')
+            cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
+            cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')
+            cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
+            cerebro.addanalyzer(bt.analyzers.AnnualReturn, _name='annualreturn')
+            cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='timereturn')
+            cerebro.addanalyzer(bt.analyzers.SQN, _name='sqn')
+
+            # Run backtest
+            self.results = cerebro.run()
+            self.final_value = cerebro.broker.getvalue()
+
+            # Extract analyzer results
+            analyzer = self.results[0].analyzers
+            returns_analysis = analyzer.returns.get_analysis()
+            sharpe_analysis = analyzer.sharpe.get_analysis()
+            drawdown_analysis = analyzer.drawdown.get_analysis()
+            trade_analysis = analyzer.trades.get_analysis()
+            annual_return_analysis = analyzer.annualreturn.get_analysis()
+            time_return_analysis = analyzer.timereturn.get_analysis()
+            sqn_analysis = analyzer.sqn.get_analysis()
+
+            # Compute additional metrics
+            total_return = returns_analysis['rtot']          # cumulative return (decimal)
+            total_pct_change = total_return * 100.0
+            initial_cash = cash
+            total_pl = self.final_value - initial_cash
+
+            days = (self.end_date - self.start_date).days
+            years = days / 365.0
+            cagr = ((self.final_value / initial_cash) ** (1 / years) - 1) if years > 0 else None
+
+            daily_rets = pd.Series(time_return_analysis)
+            daily_rets.index = pd.to_datetime(daily_rets.index)
+            std_dev = daily_rets.std()
+            annual_vol = std_dev * math.sqrt(252)
+
+            negative_returns = daily_rets[daily_rets < 0]
+            if len(negative_returns) > 0:
+                downside_dev = negative_returns.std()
+                sortino_ratio = (daily_rets.mean() * 252) / (downside_dev * math.sqrt(252))
+            else:
+                sortino_ratio = None
+
+            total_trades = trade_analysis.total.total if 'total' in trade_analysis and 'total' in trade_analysis.total else 0
+            won_trades = trade_analysis.won.total if 'won' in trade_analysis and 'total' in trade_analysis.won else 0
+            win_rate = (won_trades / total_trades * 100.0) if total_trades > 0 else None
+
+            benchmark_ticker = BacktestConfig.BENCHMARK_TICKER
+            benchmark_metrics = self.run_benchmark(benchmark_ticker, cash=cash, commission=commission)
+            benchmark_return = benchmark_metrics['Total Return'] # decimal form
+
+            alpha = (total_return - benchmark_return) * 100.0
+
+            benchmark_daily = self.get_benchmark_daily_returns(benchmark_ticker)
+            combined = pd.concat([daily_rets, benchmark_daily], axis=1).dropna()
+            combined.columns = ['strategy', 'benchmark']
+            excess_return = combined['strategy'] - combined['benchmark']
+            information_ratio = ((excess_return.mean() * math.sqrt(252)) / (excess_return.std() * math.sqrt(252))) if excess_return.std() != 0 else None
+
+            sharpe_ratio = sharpe_analysis.get('sharperatio', None)
+            max_drawdown = drawdown_analysis['max']['drawdown']
+
+            # Save results to new database
+            self.save_results_to_db(
+                strategy_name=self.strategy_name,
+                strategy_params=self.strategy_params,
+                ticker=self.ticker,
+                start_date=self.start_date,
+                end_date=self.end_date,
+                final_value=self.final_value,
+                total_pl=total_pl,
+                total_pct_change=total_pct_change,
+                cagr=cagr,
+                total_return=total_return,
+                std_dev=std_dev,
+                annual_vol=annual_vol,
+                sharpe_ratio=sharpe_ratio,
+                sortino_ratio=sortino_ratio,
+                max_drawdown=max_drawdown,
+                win_rate=win_rate,
+                alpha=alpha,
+                num_trades=total_trades,
+                information_ratio=information_ratio
+            )
+
+            # Ensure plots directory exists
+            if not os.path.exists('plots'):
+                os.makedirs('plots')
+            plot_filename = f"plots/backtest_plot_{self.strategy_name}_{self.ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+
+            # Make the plot prettier
+            # Set a nicer style
+            figs = cerebro.plot(style='candle', barup='green', bardown='red', volume=False)
+            fig = figs[0][0]
+
+            # Customize figure
+            fig.suptitle(f"Backtest Result - {self.strategy_name} on {self.ticker}", fontsize=16, fontweight='bold')
+            fig.savefig(plot_filename, dpi=300, bbox_inches='tight')
+            plt.close(fig)
+
+            self.save_plot_filename(plot_filename)
+
+        except Exception as e:
+            logging.error(f"Error during backtest: {e}")
+            raise
+
+
+            # Save results to new database
+    def save_results_to_db(self, strategy_name, strategy_params, ticker, start_date, end_date,
+                           final_value, total_pl, total_pct_change, cagr, total_return,
+                           std_dev, annual_vol, sharpe_ratio, sortino_ratio, max_drawdown,
+                           win_rate, alpha, num_trades, information_ratio):
+        
+        conn = sqlite3.connect('backtesting_results.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS backtest_summary (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy_name TEXT,
+                strategy_params TEXT,
+                ticker TEXT,
+                start_date TEXT,
+                end_date TEXT,
+                final_value REAL,
+                total_pl REAL,
+                total_pct_change REAL,
+                cagr REAL,
+                total_return REAL,
+                std_dev REAL,
+                annual_vol REAL,
+                sharpe_ratio REAL,
+                sortino_ratio REAL,
+                max_drawdown REAL,
+                win_rate REAL,
+                alpha REAL,
+                num_trades INTEGER,
+                information_ratio REAL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        cursor.execute('''
+            INSERT INTO backtest_summary (
+                strategy_name, strategy_params, ticker, start_date, end_date,
+                final_value, total_pl, total_pct_change, cagr, total_return,
+                std_dev, annual_vol, sharpe_ratio, sortino_ratio, max_drawdown,
+                win_rate, alpha, num_trades, information_ratio
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            strategy_name,
+            json.dumps(strategy_params),
+            ticker,
+            start_date.strftime('%Y-%m-%d %H:%M:%S'),
+            end_date.strftime('%Y-%m-%d %H:%M:%S'),
+            final_value,
+            total_pl,
+            total_pct_change,
+            cagr if cagr is not None else None,
+            total_return,
+            std_dev if not pd.isna(std_dev) else None,
+            annual_vol if not pd.isna(annual_vol) else None,
+            sharpe_ratio,
+            sortino_ratio if sortino_ratio is not None else None,
+            max_drawdown,
+            win_rate,
+            alpha,
+            num_trades,
+            information_ratio
+        ))
+        conn.commit()
+        conn.close()
+
+
+    def get_benchmark_daily_returns(self, benchmark_ticker):
+        if hasattr(self, 'benchmark_daily_returns'):
+            ser = pd.Series(self.benchmark_daily_returns)
+            ser.index = pd.to_datetime(ser.index)
+            return ser
+        else:
+            # If not run yet, run benchmark now
+            self.run_benchmark(benchmark_ticker)
+            ser = pd.Series(self.benchmark_daily_returns)
+            ser.index = pd.to_datetime(ser.index)
+            return ser
+
+    def get_benchmark_daily_returns(self, benchmark_ticker):
+        if hasattr(self, 'benchmark_daily_returns'):
+            ser = pd.Series(self.benchmark_daily_returns)
+            ser.index = pd.to_datetime(ser.index)
+            return ser
+        else:
+            # If not run yet, run benchmark now
+            self.run_benchmark(benchmark_ticker)
+            ser = pd.Series(self.benchmark_daily_returns)
+            ser.index = pd.to_datetime(ser.index)
+            return ser
+
+
+    def save_results(self, plot_filename=None):
+        if not os.path.exists('components/backtesting_module/results'):
+            os.makedirs('components/backtesting_module/results')
+        conn = sqlite3.connect('components/backtesting_module/results/backtest_results.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS backtest_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy_name TEXT,
+                strategy_params TEXT,
+                ticker TEXT,
+                start_date TEXT,
+                end_date TEXT,
+                final_value REAL,
+                total_return REAL,
+                sharpe_ratio REAL,
+                max_drawdown REAL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        analyzer = self.results[0].analyzers
+        returns_analysis = analyzer.returns.get_analysis()
+        sharpe_analysis = analyzer.sharpe.get_analysis()
+        drawdown_analysis = analyzer.drawdown.get_analysis()
+
+        total_return = returns_analysis['rtot']
+        sharpe_ratio = sharpe_analysis.get('sharperatio', None)
+        max_drawdown = drawdown_analysis['max']['drawdown']
+
+        cursor.execute('''
+            INSERT INTO backtest_results (
+                strategy_name, strategy_params, ticker, start_date, end_date,
+                final_value, total_return, sharpe_ratio, max_drawdown
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            self.strategy_name,
+            json.dumps(self.strategy_params),
+            self.ticker,
+            self.start_date.strftime('%Y-%m-%d %H:%M:%S'),
+            self.end_date.strftime('%Y-%m-%d %H:%M:%S'),
+            self.final_value,
+            total_return,
+            sharpe_ratio,
+            max_drawdown
+        ))
+        conn.commit()
+
+        # New table for saving plot results
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS backtest_plots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                backtest_id INTEGER,
+                plot_file TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(backtest_id) REFERENCES backtest_results(id)
+            )
+        ''')
+
+        # Get the last inserted backtest_id
+        backtest_id = cursor.lastrowid
+
+        if plot_filename is not None:
+            cursor.execute('''
+                INSERT INTO backtest_plots (backtest_id, plot_file)
+                VALUES (?, ?)
+            ''', (backtest_id, plot_filename))
+            conn.commit()
+
+        conn.close()
+
+    def get_performance_metrics(self):
+        analyzer = self.results[0].analyzers
+
+        # Extract existing metrics
+        final_value = self.final_value
+        returns_analysis = analyzer.returns.get_analysis()
+        sharpe_analysis = analyzer.sharpe.get_analysis()
+        drawdown_analysis = analyzer.drawdown.get_analysis()
+
+        # Extract additional metrics from newly added analyzers
+        # annualreturn: a dict of year: return
+        annual_return_analysis = analyzer.annualreturn.get_analysis()
+        # timereturn: daily returns as a dict {datetime: return}
+        time_return_analysis = analyzer.timereturn.get_analysis()
+        # sqn: SQN value
+        sqn_analysis = analyzer.sqn.get_analysis()
+
+        # Note: The user requested many metrics. Some are not directly available out-of-the-box.
+        # Below we report what we can from the analyzers we've added:
+        # - Final Portfolio Value: final_value
+        # - Total Return: returns_analysis['rtot']
+        # - Sharpe Ratio: sharpe_analysis.get('sharperatio', None)
+        # - Max Drawdown: drawdown_analysis['max']['drawdown']
+        # - Annual Returns (from AnnualReturn): annual_return_analysis
+        # - Daily Returns (from TimeReturn): time_return_analysis (dict of daily returns)
+        # - SQN: sqn_analysis['sqn']
+
+        # The user asked for CAGR, Win Rate, # of Trades, etc.:
+        # # of Trades: From trade_analysis inside run_backtest we have total trades info.
+        # We'll parse what we can from TradeAnalyzer here.
+        trade_analysis = analyzer.trades.get_analysis()
+        total_trades = trade_analysis.total.total if 'total' in trade_analysis and 'total' in trade_analysis.total else None
+        won_trades = trade_analysis.won.total if 'won' in trade_analysis and 'total' in trade_analysis.won else None
+        lost_trades = trade_analysis.lost.total if 'lost' in trade_analysis and 'total' in trade_analysis.lost else None
+        win_rate = None
+        if won_trades is not None and total_trades is not None and total_trades > 0:
+            win_rate = (won_trades / total_trades) * 100.0
+
+        # CAGR (not directly out-of-the-box), skip since user said if not out-of-box skip
+        # Standard Deviation, Annualized Volatility, Sortino Ratio, Alpha, Information Ratio also skip.
+
+        metrics = {
+            'Final Portfolio Value': final_value,
+            'Total Return': returns_analysis['rtot'],          # cumulative return
+            'Total % Return': returns_analysis['rtot'] * 100,  # convert to percentage
+            'Sharpe Ratio': sharpe_analysis.get('sharperatio', None),
+            'Max Drawdown': drawdown_analysis['max']['drawdown'],
+            'Annual Returns': annual_return_analysis,
+            'Daily Returns': time_return_analysis,
+            'SQN': sqn_analysis['sqn'] if 'sqn' in sqn_analysis else None,
+            'Number of Trades': total_trades,
+            'Win Rate (%)': win_rate
+        }
+
+        return metrics
+
+    def save_plot_filename(self, plot_filename):
+        with sqlite3.connect('backtesting_results.db') as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS backtest_plots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    backtest_id INTEGER,
+                    plot_file TEXT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(backtest_id) REFERENCES backtest_summary(id)
+                )
+            ''')
+
+            # Retrieve the most recent backtest_id from backtest_summary
+            cursor.execute("SELECT MAX(id) FROM backtest_summary")
+            result = cursor.fetchone()
+            backtest_id = result[0] if result else None
+
+            if backtest_id is not None:
+                cursor.execute('''
+                    INSERT INTO backtest_plots (backtest_id, plot_file)
+                    VALUES (?, ?)
+                ''', (backtest_id, plot_filename))
+                conn.commit()
+            else:
+                # Optionally, handle the scenario where no backtest record exists
+                logging.warning("No backtest record found to associate the plot with.")
+
+
+
+    def run_benchmark(self, benchmark_ticker, cash=100000.0, commission=0.0):
+        conn = sqlite3.connect(self.db_path)
+        start_str = self.start_date.strftime('%Y-%m-%d %H:%M:%S')
+        end_str = self.end_date.strftime('%Y-%m-%d %H:%M:%S')
+        query = """
+            SELECT timestamp, open, high, low, close, volume
+            FROM historical_data
+            WHERE ticker_symbol = ?
+              AND timestamp >= ?
+              AND timestamp <= ?
+            ORDER BY timestamp ASC
+        """
+        benchmark_data = pd.read_sql(query, conn, params=(benchmark_ticker, start_str, end_str))
+        conn.close()
+
+        if benchmark_data.empty:
+            raise DataError(f"No benchmark data found for {benchmark_ticker} between {self.start_date} and {self.end_date}")
+
+        benchmark_data['timestamp'] = pd.to_datetime(benchmark_data['timestamp'])
+        benchmark_data.set_index('timestamp', inplace=True)
+
+        cerebro = bt.Cerebro()
+        data_feed = bt.feeds.PandasData(
+            dataname=benchmark_data,
+            timeframe=bt.TimeFrame.Minutes,
+            compression=5
+        )
+        cerebro.adddata(data_feed)
+        cerebro.addstrategy(BenchmarkStrategy)
+        cerebro.addsizer(bt.sizers.PercentSizer, percents=100)
+
+        cerebro.broker.setcash(cash)
+        cerebro.broker.setcommission(commission=commission)
+        cerebro.broker.set_slippage_perc(0.0)
+
+        cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe')
+        cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
+        cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')
+        cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
+        cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='timereturn')
+
+        benchmark_results = cerebro.run()
+        final_value = cerebro.broker.getvalue()
+        analyzer = benchmark_results[0].analyzers
+
+        returns_analysis = analyzer.returns.get_analysis()
+        sharpe_analysis = analyzer.sharpe.get_analysis()
+        drawdown_analysis = analyzer.drawdown.get_analysis()
+
+        self.benchmark_daily_returns = analyzer.timereturn.get_analysis()
+
+        metrics = {
+            'Final Portfolio Value': final_value,
+            'Total Return': returns_analysis['rtot'],
+            'Sharpe Ratio': sharpe_analysis.get('sharperatio', None),
+            'Max Drawdown': drawdown_analysis['max']['drawdown']
+        }
+        return metrics
+
+    def compare_with_benchmark(self, benchmark_ticker='SPY'):
+        strategy_metrics = self.get_performance_metrics()
+        benchmark_metrics = self.run_benchmark(benchmark_ticker)
+
+        print("=== Comparison ===")
+        print("Strategy:", strategy_metrics)
+        print("Benchmark:", benchmark_metrics)
+
+        return {
+            'Strategy': strategy_metrics,
+            'Benchmark': benchmark_metrics
+        }
+
+
+# File: components/backtesting_module/benchmark_strategy.py
+# Type: py
+
+# File: components/backtesting_module/benchmark_strategy.py
+# Type: py
+
+import backtrader as bt
+
+class BenchmarkStrategy(bt.Strategy):
+    """
+    Simple buy and hold strategy for benchmark comparison.
+    Now updated with optional stop_loss and take_profit.
+    """
+    params = (
+        ('stop_loss', None),
+        ('take_profit', None),
+    )
+
+    def __init__(self):
+        self.bought = False
+
+    def next(self):
+        if not self.bought:
+            entry_price = self.data.close[0]
+            # If both stop_loss and take_profit are set, use buy_bracket
+            if self.params.stop_loss is not None and self.params.take_profit is not None:
+                stop_price = entry_price * (1.0 - self.params.stop_loss)
+                limit_price = entry_price * (1.0 + self.params.take_profit)
+                self.buy_bracket(price=entry_price, stopprice=stop_price, limitprice=limit_price)
+            else:
+                self.buy()
+            self.bought = True
+
+
+# File: components/backtesting_module/config.py
+# Type: py
+
+# File: components/backtesting_module/config.py
+# Type: py
+
+class BacktestConfig:
+    """Configuration for backtesting module"""
+    
+    # Database settings
+    DB_PATH = 'data/backtest_results.db'
+    
+    # Backtest settings
+    INITIAL_CASH = 100000.0
+    DEFAULT_COMMISSION = 0.000
+    BENCHMARK_TICKER = 'SPY'
+    
+    # Data settings
+    DEFAULT_TIMEFRAME = '5Min'
+    MIN_DATA_POINTS = 100
+    
+    # Resource limits
+    MAX_OPTIMIZATION_COMBINATIONS = 100
+    CPU_THRESHOLD = 80
+    MEMORY_THRESHOLD = 80
+
+
+# File: components/backtesting_module/exceptions.py
+# Type: py
+
+# File: components/backtesting_module/exceptions.py
+# Type: py
+
+class BacktestError(Exception):
+    """Base exception for backtesting errors"""
+    pass
+
+class DataError(BacktestError):
+    """Exception for data-related errors"""
+    pass
+
+class StrategyError(BacktestError):
+    """Exception for strategy-related errors"""
+    pass
+
+class OptimizationError(BacktestError):
+    """Exception for optimization-related errors"""
+    pass
+
+
+# File: components/backtesting_module/formatters.py
+# Type: py
+
+# File: components/backtesting_module/formatters.py
+# Type: py
+
+class ResultFormatter:
+    """
+    Formats backtest results for consistent presentation.
+    """
+    
+    @staticmethod
+    def format_metrics(metrics: dict) -> dict:
+        """
+        Formats performance metrics with proper rounding and labels.
+        """
+        return {
+            'Total Return': f"{metrics['Total Return']*100:.2f}%",
+            'Sharpe Ratio': f"{metrics['Sharpe Ratio']:.2f}" if metrics['Sharpe Ratio'] is not None else 'N/A',
+            'Max Drawdown': f"{metrics['Max Drawdown']:.2f}%",
+            'Final Value': f"${metrics['Final Portfolio Value']:,.2f}"
+        }
+    
+    @staticmethod
+    def format_optimization_results(results: list) -> list:
+        """
+        Formats optimization results for display.
+        """
+        formatted_results = []
+        for result in results:
+            sr = result['sharpe_ratio']
+            formatted_results.append({
+                'Parameters': result['params'],
+                'Sharpe Ratio': f"{sr:.2f}" if sr is not None else 'N/A',
+                'Total Return': f"{result['total_return']*100:.2f}%",
+                'Max Drawdown': f"{result['max_drawdown']:.2f}%"
+            })
+        return formatted_results
+
+
+# File: components/backtesting_module/optimizer.py
+# Type: py
+
+# File: components/backtesting_module/optimizer.py
+# Type: py
+
+import backtrader as bt
+from components.backtesting_module.backtrader.strategy_adapters import StrategyAdapter
+from components.data_management_module.alpaca_api import AlpacaAPIClient
+from datetime import datetime
+import pandas as pd
+import logging
+from itertools import product
+
+logging.basicConfig(
+    filename='logs/optimizer.log',
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s:%(message)s'
+)
+
+class Optimizer:
+    """
+    Performs parameter optimization (grid search).
+    """
+
+    def __init__(self, strategy_name, ticker, start_date, end_date):
+        self.strategy_name = strategy_name
+        self.ticker = ticker
+        self.start_date = start_date
+        self.end_date = end_date
+        self.data = None
+        self.alpaca_client = AlpacaAPIClient()
+
+    def load_data(self):
+        """
+        Fetches historical data from the Alpaca API.
+        """
+        logging.info(f"Fetching data for {self.ticker} from {self.start_date} to {self.end_date}")
+        try:
+            self.data = self.alpaca_client.fetch_historical_data(
+                self.ticker,
+                self.start_date,
+                self.end_date,
+                timeframe='1Day'
+            )
+            if self.data.empty:
+                raise ValueError(f"No data found for ticker {self.ticker} between {self.start_date} and {self.end_date}")
+            self.data.rename(columns={
+                't': 'datetime',
+                'o': 'open',
+                'h': 'high',
+                'l': 'low',
+                'c': 'close',
+                'v': 'volume'
+            }, inplace=True)
+            self.data.set_index('datetime', inplace=True)
+            self.data.index = pd.to_datetime(self.data.index)
+        except Exception as e:
+            logging.error(f"Error fetching data: {e}")
+            raise
+
+    def run_optimization(self, param_ranges, cash=100000.0, commission=0.001, max_combinations=100):
+        self.load_data()
+        cerebro = bt.Cerebro(optreturn=False)
+        data_feed = bt.feeds.PandasData(dataname=self.data)
+        cerebro.adddata(data_feed)
+
+        # Generate parameter combinations
+        param_names = list(param_ranges.keys())
+        param_values = list(param_ranges.values())
+        combinations = list(product(*param_values))
+
+        # Limit combinations if too large
+        if len(combinations) > max_combinations:
+            logging.warning(f"Limiting combinations to first {max_combinations} due to resource constraints.")
+            combinations = combinations[:max_combinations]
+
+        cerebro.optstrategy(
+            StrategyAdapter,
+            strategy_name=self.strategy_name,
+            strategy_params=[
+                dict(zip(param_names, combination)) for combination in combinations
+            ]
+        )
+        cerebro.broker.setcash(cash)
+        cerebro.broker.setcommission(commission=commission)
+        cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe')
+        cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
+        cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')
+        logging.info(f"Starting optimization for {self.strategy_name} on {self.ticker}")
+        optimized_runs = cerebro.run(maxcpus=1)
+        logging.info("Optimization completed.")
+        return self.collect_results(optimized_runs)
+
+    def collect_results(self, optimized_runs):
+        optimization_results = []
+        for run in optimized_runs:
+            for strategy in run:
+                params = strategy.params.strategy_params
+                sharpe = strategy.analyzers.sharpe.get_analysis().get('sharperatio', None)
+                drawdown = strategy.analyzers.drawdown.get_analysis()['max']['drawdown']
+                total_return = strategy.analyzers.returns.get_analysis()['rtot']
+                optimization_results.append({
+                    'params': params,
+                    'sharpe_ratio': sharpe,
+                    'max_drawdown': drawdown,
+                    'total_return': total_return
+                })
+        return optimization_results
+
+    def get_best_params(self, optimization_results, metric='sharpe_ratio'):
+        df = pd.DataFrame(optimization_results)
+        df = df.dropna(subset=[metric])
+        if df.empty:
+            raise ValueError("No valid optimization results to select best parameters.")
+        best_row = df.loc[df[metric].idxmax()]
+        return best_row['params']
+
+
+# File: components/backtesting_module/parameter_validator.py
+# Type: py
+
+# File: components/backtesting_module/parameter_validator.py
+# Type: py
+
+import logging
+from typing import Dict, Any, List
+
+class ParameterValidator:
+    """
+    Validates strategy parameters and enforces optimization limits
+    """
+    # Default parameter ranges aligned with documentation
+    DEFAULT_RANGES = {
+        'MovingAverageCrossover': {
+            'short_window': {'min': 5, 'max': 15, 'step': 1},
+            'long_window': {'min': 10, 'max': 20, 'step': 1}
+        },
+        'RSIStrategy': {
+            'rsi_period': {'min': 5, 'max': 30, 'step': 5},
+            'oversold': {'min': 20, 'max': 40, 'step': 5},
+            'overbought': {'min': 60, 'max': 80, 'step': 5}
+        },
+        'MACDStrategy': {
+            'fast_period': {'min': 12, 'max': 16, 'step': 1},
+            'slow_period': {'min': 26, 'max': 30, 'step': 1},
+            'signal_period': {'min': 9, 'max': 12, 'step': 1}
+        },
+        'BollingerBandsStrategy': {
+            'window': {'min': 20, 'max': 30, 'step': 5},
+            'num_std': {'min': 2, 'max': 3, 'step': 0.5}
+        }
+    }
+
+    @staticmethod
+    def validate_parameters(strategy_name: str, params: Dict[str, Any]) -> bool:
+        if strategy_name not in ParameterValidator.DEFAULT_RANGES:
+            logging.warning(f"No validation rules for strategy: {strategy_name}")
+            return True
+
+        ranges = ParameterValidator.DEFAULT_RANGES[strategy_name]
+        for param, value in params.items():
+            if param in ranges:
+                if value < ranges[param]['min'] or value > ranges[param]['max']:
+                    raise ValueError(
+                        f"Parameter {param} value {value} outside valid range "
+                        f"({ranges[param]['min']}-{ranges[param]['max']})"
+                    )
+        return True
+
+    @staticmethod
+    def generate_grid_parameters(strategy_name: str) -> Dict[str, List[float]]:
+        if strategy_name not in ParameterValidator.DEFAULT_RANGES:
+            raise ValueError(f"No grid search parameters defined for {strategy_name}")
+
+        ranges = ParameterValidator.DEFAULT_RANGES[strategy_name]
+        grid_params = {}
+
+        for param, range_info in ranges.items():
+            # Handling step as int or float
+            step = range_info['step']
+            start = range_info['min']
+            stop = range_info['max'] + step if isinstance(step, int) else range_info['max'] + step/10.0
+
+            if isinstance(step, int):
+                values = list(range(start, int(stop), step))
+            else:
+                # Generate float range
+                values = []
+                current = start
+                while current <= range_info['max']:
+                    values.append(round(current, 2))
+                    current += step
+
+            grid_params[param] = values
+
+        return grid_params
+
+
+# File: components/backtesting_module/resource_monitor.py
+# Type: py
+
+# File: components/backtesting_module/resource_monitor.py
+# Type: py
+
+import psutil
+import logging
+
+class ResourceMonitor:
+    """
+    Simple resource monitoring to prevent system overload during backtesting.
+    """
+    
+    @staticmethod
+    def check_resources():
+        cpu_percent = psutil.cpu_percent()
+        memory_percent = psutil.virtual_memory().percent
+
+        if cpu_percent > 80 or memory_percent > 80:
+            logging.warning(f"System resources stressed: CPU {cpu_percent}%, Memory {memory_percent}%")
+            raise ResourceWarning("System resources are too constrained for backtesting")
+
+        return True
+
+    @staticmethod
+    def get_resource_usage():
+        return {
+            'cpu_percent': psutil.cpu_percent(),
+            'memory_percent': psutil.virtual_memory().percent,
+            'disk_percent': psutil.disk_usage('/').percent
+        }
+
+
+# File: components/backtesting_module/results_viewer.py
+# Type: py
+
+# File: components/backtesting_module/results_viewer.py
+# Type: py
+
+import pandas as pd
+import sqlite3
+import json
+from datetime import datetime
+
+class ResultsViewer:
+    """
+    Handles retrieval and visualization of backtest results.
+    """
+    
+    def __init__(self):
+        self.db_path = 'components/backtesting_module/results/backtest_results.db'
+    
+    def get_results(self, limit=10):
+        conn = sqlite3.connect(self.db_path)
+        query = """
+            SELECT * FROM backtest_results 
+            ORDER BY timestamp DESC 
+            LIMIT ?
+        """
+        results = pd.read_sql_query(query, conn, params=(limit,))
+        conn.close()
+
+        results['strategy_params'] = results['strategy_params'].apply(json.loads)
+        return results
+
+    def get_specific_result(self, backtest_id):
+        conn = sqlite3.connect(self.db_path)
+        query = "SELECT * FROM backtest_results WHERE id = ?"
+        result = pd.read_sql_query(query, conn, params=(backtest_id,))
+        conn.close()
+
+        if not result.empty:
+            result['strategy_params'] = result['strategy_params'].apply(json.loads)
+        return result
+
+
+# File: components/backtesting_module/strategy_adapters.py
+# Type: py
+
+# File: components/backtesting_module/backtrader/strategy_adapters.py
+# Type: py
+
+import backtrader as bt
+
+class BaseStrategyWithSLTP(bt.Strategy):
+    params = (
+        ('stop_loss', 0.0),
+        ('take_profit', 0.0),
+    )
+    
+    # If you donâ€™t provide stop_loss and take_profit, the strategy will just place simple buy/sell orders without bracket orders.
+    # cerebro.addstrategy(BollingerBandsStrategy, period=20, devfactor=2, stop_loss=0.05, take_profit=0.10)
+
+
+    def __init__(self):
+        self.entry_price = None
+
+    def notify_order(self, order):
+        if order.status in [order.Completed]:
+            if order.isbuy():
+                self.entry_price = order.executed.price
+            elif order.issell():
+                self.entry_price = None
+
+    def check_sl_tp(self):
+        if self.position and self.entry_price:
+            current_price = self.data.close[0]
+            pct_change = (current_price - self.entry_price) / self.entry_price * 100.0
+            # Check stop loss
+            if self.params.stop_loss and pct_change <= -abs(self.params.stop_loss):
+                self.close()
+            # Check take profit
+            elif self.params.take_profit and pct_change >= abs(self.params.take_profit):
+                self.close()
+
+
+class MovingAverageCrossoverStrategy(bt.Strategy):
+    """Moving Average Crossover Strategy Implementation"""
+    params = (
+        ('short_window', 10),
+        ('long_window', 20),
+        ('stop_loss', None),
+        ('take_profit', None),
+    )
+
+    def __init__(self):
+        self.short_ma = bt.indicators.SMA(self.data.close, period=self.params.short_window)
+        self.long_ma = bt.indicators.SMA(self.data.close, period=self.params.long_window)
+        self.crossover = bt.indicators.CrossOver(self.short_ma, self.long_ma)
+
+    def next(self):
+        if self.crossover > 0 and not self.position:
+            entry_price = self.data.close[0]
+            if self.params.stop_loss is not None and self.params.take_profit is not None:
+                stop_price = entry_price * (1.0 - self.params.stop_loss)
+                limit_price = entry_price * (1.0 + self.params.take_profit)
+                self.buy_bracket(price=entry_price, stopprice=stop_price, limitprice=limit_price)
+            else:
+                self.buy()
+        elif self.crossover < 0 and self.position:
+            self.sell()
+
+
+
+
+
+
+class RSIStrategy(bt.Strategy):
+    """RSI Strategy Implementation"""
+    params = (
+        ('rsi_period', 14),
+        ('overbought', 70),
+        ('oversold', 30),
+        ('stop_loss', None),
+        ('take_profit', None),
+    )
+
+    def __init__(self):
+        self.rsi = bt.indicators.RSI(self.data.close, period=self.params.rsi_period)
+
+    def next(self):
+        if self.rsi < self.params.oversold and not self.position:
+            entry_price = self.data.close[0]
+            if self.params.stop_loss is not None and self.params.take_profit is not None:
+                stop_price = entry_price * (1.0 - self.params.stop_loss)
+                limit_price = entry_price * (1.0 + self.params.take_profit)
+                self.buy_bracket(price=entry_price, stopprice=stop_price, limitprice=limit_price)
+            else:
+                self.buy()
+        elif self.rsi > self.params.overbought and self.position:
+            self.sell()
+
+
+
+
+
+
+
+class MACDStrategy(bt.Strategy):
+    """MACD Strategy Implementation"""
+    params = (
+        ('fast_period', 12),
+        ('slow_period', 26),
+        ('signal_period', 9),
+        ('stop_loss', None),
+        ('take_profit', None),
+    )
+
+    def __init__(self):
+        self.macd = bt.indicators.MACD(
+            self.data.close,
+            period_me1=self.params.fast_period,
+            period_me2=self.params.slow_period,
+            period_signal=self.params.signal_period
+        )
+
+    def next(self):
+        if self.macd.macd > self.macd.signal and not self.position:
+            entry_price = self.data.close[0]
+            if self.params.stop_loss is not None and self.params.take_profit is not None:
+                stop_price = entry_price * (1.0 - self.params.stop_loss)
+                limit_price = entry_price * (1.0 + self.params.take_profit)
+                self.buy_bracket(price=entry_price, stopprice=stop_price, limitprice=limit_price)
+            else:
+                self.buy()
+        elif self.macd.macd < self.macd.signal and self.position:
+            self.sell()
+
+
+
+
+
+class BollingerBandsStrategy(bt.Strategy):
+    """Bollinger Bands Strategy Implementation"""
+    params = (
+        ('period', 20),
+        ('devfactor', 2),
+        ('stop_loss', None),
+        ('take_profit', None),
+    )
+
+    def __init__(self):
+        self.boll = bt.indicators.BollingerBands(
+            self.data.close,
+            period=self.params.period,
+            devfactor=self.params.devfactor
+        )
+
+    def next(self):
+        if self.data.close[0] < self.boll.lines.bot[0] and not self.position:
+            entry_price = self.data.close[0]
+            if self.params.stop_loss is not None and self.params.take_profit is not None:
+                stop_price = entry_price * (1.0 - self.params.stop_loss)
+                limit_price = entry_price * (1.0 + self.params.take_profit)
+                self.buy_bracket(price=entry_price, stopprice=stop_price, limitprice=limit_price)
+            else:
+                self.buy()
+        elif self.data.close[0] > self.boll.lines.top[0] and self.position:
+            self.sell()
+
+
+
+
+
+
+class MomentumStrategy(bt.Strategy):
+    """Simple Momentum Strategy Implementation"""
+    params = (
+        ('momentum_period', 10),
+        ('stop_loss', None),
+        ('take_profit', None),
+    )
+
+    def __init__(self):
+        self.momentum = bt.indicators.MomentumOscillator(
+            self.data.close,
+            period=self.params.momentum_period
+        )
+
+    def next(self):
+        if self.momentum > 0 and not self.position:
+            entry_price = self.data.close[0]
+            if self.params.stop_loss is not None and self.params.take_profit is not None:
+                stop_price = entry_price * (1.0 - self.params.stop_loss)
+                limit_price = entry_price * (1.0 + self.params.take_profit)
+                self.buy_bracket(price=entry_price, stopprice=stop_price, limitprice=limit_price)
+            else:
+                self.buy()
+        elif self.momentum < 0 and self.position:
+            self.sell()
+
+
+
+
+
+
+class StrategyAdapter:
+    """
+    Strategy adapter that maps strategy names to their implementations.
+    """
+    
+    STRATEGIES = {
+        'MovingAverageCrossover': MovingAverageCrossoverStrategy,
+        'RSI': RSIStrategy,
+        'MACD': MACDStrategy,
+        'BollingerBands': BollingerBandsStrategy,
+        'Momentum': MomentumStrategy
+    }
+
+    @staticmethod
+    def get_strategy(name):
+        if name not in StrategyAdapter.STRATEGIES:
+            raise ValueError(
+                f"Strategy '{name}' not found. "
+                f"Available strategies: {list(StrategyAdapter.STRATEGIES.keys())}"
+            )
+        return StrategyAdapter.STRATEGIES[name]
+
+# File: components/backtesting_module/utils.py
+# Type: py
+
+# File: components/backtesting_module/utils.py
+# Type: py
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+from .config import BacktestConfig
+from .exceptions import DataError
+
+def validate_backtest_data(data):
+    """
+    Validates that data meets minimum requirements for backtesting.
+    """
+    if data is None or len(data) < BacktestConfig.MIN_DATA_POINTS:
+        raise DataError(f"Insufficient data points. Minimum required: {BacktestConfig.MIN_DATA_POINTS}")
+
+    required_columns = ['open', 'high', 'low', 'close', 'volume']
+    missing_columns = [col for col in required_columns if col not in data.columns]
+    if missing_columns:
+        raise DataError(f"Missing required columns: {missing_columns}")
+
+def calculate_statistics(returns):
+    """
+    Calculates additional performance statistics.
+    """
+    stats = {
+        'total_return': (returns + 1).prod() - 1,
+        'annual_return': (returns + 1).prod() ** (252/len(returns)) - 1 if len(returns) > 0 else np.nan,
+        'volatility': returns.std() * np.sqrt(252) if len(returns) > 0 else np.nan,
+        'max_drawdown': calculate_max_drawdown(returns),
+        'win_rate': (returns > 0).mean() if len(returns) > 0 else np.nan
+    }
+    return stats
+
+def calculate_max_drawdown(returns):
+    """
+    Calculates maximum drawdown from returns series.
+    """
+    cum_returns = (1 + returns).cumprod()
+    rolling_max = cum_returns.expanding(min_periods=1).max()
+    drawdowns = cum_returns/rolling_max - 1
+    return drawdowns.min()
+
+
+# File: components/backtesting_module/backtrader/__init__.py
+# Type: py
+
+# File: components/backtesting_module/backtrader/__init__.py
+# Type: py
+
+# File: components/backtesting_module/backtrader/benchmark_strategy.py
+# Type: py
+
+# File: components/backtesting_module/backtrader/benchmark_strategy.py
+# Type: py
+
+import backtrader as bt
+
+class BenchmarkStrategy(bt.Strategy):
+    """
+    Simple buy and hold strategy for benchmark comparison.
+    Now includes stop_loss and take_profit.
+    """
+    params = (
+        ('stop_loss', None),
+        ('take_profit', None),
+    )
+
+    def __init__(self):
+        self.bought = False
+
+    def next(self):
+        if not self.bought:
+            entry_price = self.data.close[0]
+            if self.params.stop_loss is not None and self.params.take_profit is not None:
+                stop_price = entry_price * (1.0 - self.params.stop_loss)
+                limit_price = entry_price * (1.0 + self.params.take_profit)
+                self.buy_bracket(price=entry_price, stopprice=stop_price, limitprice=limit_price)
+            else:
+                self.buy()
+            self.bought = True
+
+
+# File: components/backtesting_module/backtrader/strategies.py
+# Type: py
+
+# File: components/backtesting_module/backtrader/strategies.py
+# Type: py
+
+import backtrader as bt
+
+class MovingAverageCrossoverStrategy(bt.Strategy):
+    params = (
+        ('short_window', 10),
+        ('long_window', 20),
+        ('stop_loss', None),
+        ('take_profit', None),
+    )
+
+    def __init__(self):
+        self.short_ma = bt.indicators.SMA(self.data.close, period=self.params.short_window)
+        self.long_ma = bt.indicators.SMA(self.data.close, period=self.params.long_window)
+        self.crossover = bt.indicators.CrossOver(self.short_ma, self.long_ma)
+
+    def next(self):
+        if self.crossover > 0 and not self.position:
+            entry_price = self.data.close[0]
+            if self.params.stop_loss and self.params.take_profit and self.params.stop_loss > 0 and self.params.take_profit > 0:
+                stop_price = entry_price * (1.0 - self.params.stop_loss)
+                limit_price = entry_price * (1.0 + self.params.take_profit)
+                self.buy_bracket(price=entry_price, stopprice=stop_price, limitprice=limit_price)
+            else:
+                self.buy()
+        elif self.crossover < 0 and self.position:
+            self.close()
+
+class RSIStrategy(bt.Strategy):
+    params = (
+        ('rsi_period', 14),
+        ('overbought', 70),
+        ('oversold', 30),
+        ('stop_loss', None),
+        ('take_profit', None),
+    )
+
+    def __init__(self):
+        self.rsi = bt.indicators.RSI(self.data.close, period=self.params.rsi_period)
+
+    def next(self):
+        if self.rsi < self.params.oversold and not self.position:
+            entry_price = self.data.close[0]
+            if self.params.stop_loss and self.params.take_profit and self.params.stop_loss > 0 and self.params.take_profit > 0:
+                stop_price = entry_price * (1.0 - self.params.stop_loss)
+                limit_price = entry_price * (1.0 + self.params.take_profit)
+                self.buy_bracket(price=entry_price, stopprice=stop_price, limitprice=limit_price)
+            else:
+                self.buy()
+        elif self.rsi > self.params.overbought and self.position:
+            self.close()
+
+class MACDStrategy(bt.Strategy):
+    params = (
+        ('fast_period', 12),
+        ('slow_period', 26),
+        ('signal_period', 9),
+        ('stop_loss', None),
+        ('take_profit', None),
+    )
+
+    def __init__(self):
+        self.macd = bt.indicators.MACD(
+            self.data.close,
+            period_me1=self.params.fast_period,
+            period_me2=self.params.slow_period,
+            period_signal=self.params.signal_period
+        )
+
+    def next(self):
+        if self.macd.macd[0] > self.macd.signal[0] and not self.position:
+            entry_price = self.data.close[0]
+            if self.params.stop_loss and self.params.take_profit and self.params.stop_loss > 0 and self.params.take_profit > 0:
+                stop_price = entry_price * (1.0 - self.params.stop_loss)
+                limit_price = entry_price * (1.0 + self.params.take_profit)
+                self.buy_bracket(price=entry_price, stopprice=stop_price, limitprice=limit_price)
+            else:
+                self.buy()
+        elif self.macd.macd[0] < self.macd.signal[0] and self.position:
+            self.close()
+
+class BollingerBandsStrategy(bt.Strategy):
+    params = (
+        ('period', 20),
+        ('devfactor', 2),
+        ('stop_loss', None),
+        ('take_profit', None),
+    )
+
+    def __init__(self):
+        self.boll = bt.indicators.BollingerBands(
+            self.data.close,
+            period=self.params.period,
+            devfactor=self.params.devfactor
+        )
+
+    def next(self):
+        if self.data.close[0] < self.boll.lines.bot[0] and not self.position:
+            entry_price = self.data.close[0]
+            if self.params.stop_loss and self.params.take_profit and self.params.stop_loss > 0 and self.params.take_profit > 0:
+                stop_price = entry_price * (1.0 - self.params.stop_loss)
+                limit_price = entry_price * (1.0 + self.params.take_profit)
+                self.buy_bracket(price=entry_price, stopprice=stop_price, limitprice=limit_price)
+            else:
+                self.buy()
+        elif self.data.close[0] > self.boll.lines.top[0] and self.position:
+            self.close()
+
+class MomentumStrategy(bt.Strategy):
+    params = (
+        ('momentum_period', 10),
+        ('stop_loss', None),
+        ('take_profit', None),
+    )
+
+    def __init__(self):
+        self.momentum = bt.indicators.MomentumOscillator(
+            self.data.close,
+            period=self.params.momentum_period
+        )
+
+    def next(self):
+        if len(self.data) > self.params.momentum_period:
+            past_price = self.data.close[-self.params.momentum_period]
+            current_price = self.data.close[0]
+            momentum = (current_price / past_price) - 1.0
+
+            if momentum > 0 and not self.position:
+                entry_price = self.data.close[0]
+                if self.params.stop_loss and self.params.take_profit and self.params.stop_loss > 0 and self.params.take_profit > 0:
+                    stop_price = entry_price * (1.0 - self.params.stop_loss)
+                    limit_price = entry_price * (1.0 + self.params.take_profit)
+                    self.buy_bracket(price=entry_price, stopprice=stop_price, limitprice=limit_price)
+                else:
+                    self.buy()
+            elif momentum <= 0 and self.position:
+                self.close()
+
+
+# File: components/backtesting_module/backtrader/strategy_adapters.py
+# Type: py
+
+# File: components/backtesting_module/backtrader/strategy_adapters.py
+# Type: py
+
+import backtrader as bt
+
+class MovingAverageCrossoverStrategy(bt.Strategy):
+    """Moving Average Crossover Strategy Implementation"""
+    params = (
+        ('short_window', 10),
+        ('long_window', 20),
+        ('stop_loss', None),
+        ('take_profit', None),
+    )
+
+    def __init__(self):
+        self.short_ma = bt.indicators.SMA(self.data.close, period=self.params.short_window)
+        self.long_ma = bt.indicators.SMA(self.data.close, period=self.params.long_window)
+        self.crossover = bt.indicators.CrossOver(self.short_ma, self.long_ma)
+
+    def next(self):
+        if self.crossover > 0 and not self.position:
+            entry_price = self.data.close[0]
+            if self.params.stop_loss and self.params.take_profit and self.params.stop_loss > 0 and self.params.take_profit > 0:
+                stop_price = entry_price * (1.0 - self.params.stop_loss)
+                limit_price = entry_price * (1.0 + self.params.take_profit)
+                self.buy_bracket(price=entry_price, stopprice=stop_price, limitprice=limit_price)
+            else:
+                self.buy()
+        elif self.crossover < 0 and self.position:
+            self.close()
+
+class RSIStrategy(bt.Strategy):
+    """RSI Strategy Implementation"""
+    params = (
+        ('rsi_period', 14),
+        ('overbought', 70),
+        ('oversold', 30),
+        ('stop_loss', None),
+        ('take_profit', None),
+    )
+
+    def __init__(self):
+        self.rsi = bt.indicators.RSI(self.data.close, period=self.params.rsi_period)
+
+    def next(self):
+        if self.rsi < self.params.oversold and not self.position:
+            entry_price = self.data.close[0]
+            if self.params.stop_loss and self.params.take_profit and self.params.stop_loss > 0 and self.params.take_profit > 0:
+                stop_price = entry_price * (1.0 - self.params.stop_loss)
+                limit_price = entry_price * (1.0 + self.params.take_profit)
+                self.buy_bracket(price=entry_price, stopprice=stop_price, limitprice=limit_price)
+            else:
+                self.buy()
+        elif self.rsi > self.params.overbought and self.position:
+            self.close()
+
+class MACDStrategy(bt.Strategy):
+    """MACD Strategy Implementation"""
+    params = (
+        ('fast_period', 12),
+        ('slow_period', 26),
+        ('signal_period', 9),
+        ('stop_loss', None),
+        ('take_profit', None),
+    )
+
+    def __init__(self):
+        self.macd = bt.indicators.MACD(
+            self.data.close,
+            period_me1=self.params.fast_period,
+            period_me2=self.params.slow_period,
+            period_signal=self.params.signal_period
+        )
+
+    def next(self):
+        if self.macd.macd > self.macd.signal and not self.position:
+            entry_price = self.data.close[0]
+            if self.params.stop_loss and self.params.take_profit and self.params.stop_loss > 0 and self.params.take_profit > 0:
+                stop_price = entry_price * (1.0 - self.params.stop_loss)
+                limit_price = entry_price * (1.0 + self.params.take_profit)
+                self.buy_bracket(price=entry_price, stopprice=stop_price, limitprice=limit_price)
+            else:
+                self.buy()
+        elif self.macd.macd < self.macd.signal and self.position:
+            self.close()
+
+class BollingerBandsStrategy(bt.Strategy):
+    """Bollinger Bands Strategy Implementation"""
+    params = (
+        ('period', 20),
+        ('devfactor', 2),
+        ('stop_loss', None),
+        ('take_profit', None),
+    )
+
+    def __init__(self):
+        self.boll = bt.indicators.BollingerBands(
+            self.data.close,
+            period=self.params.period,
+            devfactor=self.params.devfactor
+        )
+
+    def next(self):
+        if self.data.close[0] < self.boll.lines.bot[0] and not self.position:
+            entry_price = self.data.close[0]
+            if self.params.stop_loss and self.params.take_profit and self.params.stop_loss > 0 and self.params.take_profit > 0:
+                stop_price = entry_price * (1.0 - self.params.stop_loss)
+                limit_price = entry_price * (1.0 + self.params.take_profit)
+                self.buy_bracket(price=entry_price, stopprice=stop_price, limitprice=limit_price)
+            else:
+                self.buy()
+        elif self.data.close[0] > self.boll.lines.top[0] and self.position:
+            self.close()
+
+class MomentumStrategy(bt.Strategy):
+    """Simple Momentum Strategy Implementation"""
+    params = (
+        ('momentum_period', 10),
+        ('stop_loss', None),
+        ('take_profit', None),
+    )
+
+    def __init__(self):
+        self.momentum = bt.indicators.MomentumOscillator(
+            self.data.close,
+            period=self.params.momentum_period
+        )
+
+    def next(self):
+        if self.momentum[0] > 0 and not self.position:
+            entry_price = self.data.close[0]
+            if self.params.stop_loss and self.params.take_profit and self.params.stop_loss > 0 and self.params.take_profit > 0:
+                stop_price = entry_price * (1.0 - self.params.stop_loss)
+                limit_price = entry_price * (1.0 + self.params.take_profit)
+                self.buy_bracket(price=entry_price, stopprice=stop_price, limitprice=limit_price)
+            else:
+                self.buy()
+        elif self.momentum[0] < 0 and self.position:
+            self.close()
+
+class StrategyAdapter:
+    """
+    Strategy adapter that maps strategy names to their implementations.
+    """
+    
+    STRATEGIES = {
+        'MovingAverageCrossover': MovingAverageCrossoverStrategy,
+        'RSI': RSIStrategy,
+        'MACD': MACDStrategy,
+        'BollingerBands': BollingerBandsStrategy,
+        'Momentum': MomentumStrategy
+    }
+
+    @staticmethod
+    def get_strategy(name):
+        if name not in StrategyAdapter.STRATEGIES:
+            raise ValueError(
+                f"Strategy '{name}' not found. "
+                f"Available strategies: {list(StrategyAdapter.STRATEGIES.keys())}"
+            )
+        return StrategyAdapter.STRATEGIES[name]
+
+
