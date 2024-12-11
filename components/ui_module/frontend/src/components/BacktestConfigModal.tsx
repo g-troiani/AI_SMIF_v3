@@ -18,18 +18,21 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
     tradingHours: {
       start: '09:30',
       end: '16:00'
-    }
+    },
+    stopLoss: '',    // new
+    takeProfit: ''   // new
   });
 
-  // Fetch available strategies when modal opens
   useEffect(() => {
     if (isOpen) {
-      console.log('Fetching strategies...');
-      fetch('/api/strategies')
+      fetch('/api/backtest/strategies')
         .then(response => response.json())
         .then(data => {
-          console.log('Received strategies:', data);
-          setStrategies(Object.keys(data));
+          if (data.success) {
+            setStrategies(data.strategies);
+          } else {
+            console.error('Error fetching strategies:', data.message);
+          }
         })
         .catch(error => {
           console.error('Error fetching strategies:', error);
@@ -37,10 +40,33 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
     }
   }, [isOpen]);
 
-  // Add another useEffect to monitor strategies state
-  useEffect(() => {
-    console.log('Current strategies in state:', strategies);
-  }, [strategies]);
+  const handleRunBacktest = () => {
+    const payload = {
+      strategy: formData.strategy,
+      symbol: formData.symbol,
+      start_date: formData.dateRange.start,
+      end_date: formData.dateRange.end,
+      stop_loss: formData.stopLoss ? parseFloat(formData.stopLoss) : null,
+      take_profit: formData.takeProfit ? parseFloat(formData.takeProfit) : null
+    };
+
+    fetch('/api/backtest/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (data.success) {
+        onClose();
+      } else {
+        console.error('Error running backtest:', data.message);
+      }
+    })
+    .catch(err => {
+      console.error('Network error running backtest:', err);
+    });
+  };
 
   if (!isOpen) return null;
 
@@ -58,7 +84,7 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
           <div className="grid grid-cols-2 gap-6">
             <div>
               <label className="block text-sm font-medium text-gray-700">Strategy</label>
-              <select 
+              <select
                 value={formData.strategy}
                 onChange={(e) => setFormData(prev => ({ ...prev, strategy: e.target.value }))}
                 className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
@@ -66,7 +92,7 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
                 <option value="">Select a strategy</option>
                 {strategies.map(strategy => (
                   <option key={strategy} value={strategy}>
-                    {strategy.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                    {strategy.replace(/([A-Z])/g, ' $1').trim()}
                   </option>
                 ))}
               </select>
@@ -91,8 +117,8 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
                 <input
                   type="date"
                   value={formData.dateRange.start}
-                  onChange={(e) => setFormData(prev => ({ 
-                    ...prev, 
+                  onChange={(e) => setFormData(prev => ({
+                    ...prev,
                     dateRange: { ...prev.dateRange, start: e.target.value }
                   }))}
                   className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
@@ -100,8 +126,8 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
                 <input
                   type="date"
                   value={formData.dateRange.end}
-                  onChange={(e) => setFormData(prev => ({ 
-                    ...prev, 
+                  onChange={(e) => setFormData(prev => ({
+                    ...prev,
                     dateRange: { ...prev.dateRange, end: e.target.value }
                   }))}
                   className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
@@ -115,8 +141,8 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
                 <input
                   type="time"
                   value={formData.tradingHours.start}
-                  onChange={(e) => setFormData(prev => ({ 
-                    ...prev, 
+                  onChange={(e) => setFormData(prev => ({
+                    ...prev,
                     tradingHours: { ...prev.tradingHours, start: e.target.value }
                   }))}
                   className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
@@ -124,8 +150,8 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
                 <input
                   type="time"
                   value={formData.tradingHours.end}
-                  onChange={(e) => setFormData(prev => ({ 
-                    ...prev, 
+                  onChange={(e) => setFormData(prev => ({
+                    ...prev,
                     tradingHours: { ...prev.tradingHours, end: e.target.value }
                   }))}
                   className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
@@ -133,6 +159,33 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
               </div>
             </div>
           </div>
+
+          {/* New fields for stop loss and take profit */}
+          <div className="grid grid-cols-2 gap-6">
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Stop Loss (%)</label>
+              <input
+                type="number"
+                step="0.1"
+                placeholder="e.g. 2 for 2%"
+                value={formData.stopLoss}
+                onChange={(e) => setFormData(prev => ({ ...prev, stopLoss: e.target.value }))}
+                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Take Profit (%)</label>
+              <input
+                type="number"
+                step="0.1"
+                placeholder="e.g. 5 for 5%"
+                value={formData.takeProfit}
+                onChange={(e) => setFormData(prev => ({ ...prev, takeProfit: e.target.value }))}
+                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+              />
+            </div>
+          </div>
+          {/* End new fields */}
 
           <div className="flex justify-end space-x-4 pt-4">
             <button
@@ -144,6 +197,7 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
             </button>
             <button
               type="button"
+              onClick={handleRunBacktest}
               className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700"
             >
               Run Backtest

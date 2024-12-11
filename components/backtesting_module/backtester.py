@@ -145,7 +145,11 @@ class Backtester:
 
             # Add strategy with stop_loss and take_profit as params
             strategy_class = StrategyAdapter.get_strategy(self.strategy_name)
-            cerebro.addstrategy(strategy_class, stop_loss=self.stop_loss, take_profit=self.take_profit, **self.strategy_params)
+            cerebro.addstrategy(strategy_class, 
+                                stop_loss=self.stop_loss, 
+                                take_profit=self.take_profit, 
+                                **self.strategy_params
+                                )
 
             cerebro.addsizer(bt.sizers.PercentSizer, percents=self.percent_invest)
             cerebro.broker.setcash(cash)

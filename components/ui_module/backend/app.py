@@ -187,30 +187,6 @@ def internal_error(error):
         'message': 'Internal server error'
     }), 500
 
-@app.route('/api/strategies', methods=['GET'])
-def get_strategies():
-    logger.info("Received request for strategies")
-    try:
-        config_path = os.path.join(project_root, 'config/strategies.json')
-        logger.debug(f"Looking for strategies at: {config_path}")
-        
-        if not os.path.exists(config_path):
-            logger.error(f"Strategies file not found at: {config_path}")
-            return jsonify({
-                'success': False,
-                'message': 'Strategies configuration not found'
-            }), 404
-            
-        with open(config_path, 'r') as f:
-            strategies = json.load(f)
-            logger.info(f"Successfully loaded {len(strategies)} strategies")
-            return jsonify(strategies)
-    except Exception as e:
-        logger.error(f"Error loading strategies: {str(e)}\nTraceback: {traceback.format_exc()}")
-        return jsonify({
-            'success': False,
-            'message': str(e)
-        }), 500
 
 def initialize_app():
     """Initialize the application with required setup"""
@@ -515,6 +491,71 @@ def get_dashboard_data():
         }), 500
         
         
+        
+        
+        
+
+@app.route('/api/backtest/strategies', methods=['GET'])
+def get_available_strategies():
+    from components.backtesting_module.backtrader.strategy_adapters import StrategyAdapter
+    # StrategyAdapter.STRATEGIES is a dict { 'Name': StrategyClass, ... }
+    strategies = list(StrategyAdapter.STRATEGIES.keys())
+    return jsonify({
+        'success': True,
+        'strategies': strategies
+    })
+
+
+
+@app.route('/api/backtest/run', methods=['POST'])
+def run_backtest():
+    from components.backtesting_module.backtester import Backtester
+    data = request.get_json()
+    strategy_name = data.get('strategy')
+    symbol = data.get('symbol')
+    start_date = data.get('start_date')
+    end_date = data.get('end_date')
+    # Optional parameters such as stop_loss, take_profit could be included if your UI sends them:
+    stop_loss = data.get('stop_loss')
+    take_profit = data.get('take_profit')
+    #trading_hours_start
+    #trading_hours_end
+    try:
+        start_dt = pd.to_datetime(start_date)
+        end_dt = pd.to_datetime(end_date)
+
+        # If strategy parameters are passed, extract them:
+        # strategy_params = data.get('strategy_params', {})
+        strategy_params = {}  # For now, empty or fill as needed.
+
+        backtester = Backtester(
+            strategy_name=strategy_name,
+            strategy_params=strategy_params,
+            ticker=symbol,
+            start_date=start_dt,
+            end_date=end_dt,
+            db_path=os.path.join(project_root, 'data', 'market_data.db'),
+            stop_loss=stop_loss,
+            take_profit=take_profit
+        )
+        backtester.run_backtest()
+
+        return jsonify({
+            'success': True,
+            'message': 'Backtest completed successfully'
+            # Optionally return a backtest_id or unique_id if you want to fetch results later.
+        })
+
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+
+
+
+
 
 
 if __name__ == '__main__':
