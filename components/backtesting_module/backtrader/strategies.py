@@ -137,3 +137,41 @@ class MomentumStrategy(bt.Strategy):
                     self.buy()
             elif momentum <= 0 and self.position:
                 self.close()
+
+
+
+import backtrader as bt
+
+class ImmediateActionStrategy(bt.Strategy):
+    """
+    A simple strategy that:
+    - Buys as soon as the first bar is received.
+    - Closes the position on the following bar.
+    Ensures almost immediate execution once data comes in.
+    """
+
+    def __init__(self):
+        self.bar_count = 0
+        self.trades_executed = 0  # Track number of trades
+
+    def next(self):
+        self.bar_count += 1
+        
+        if not self.position:
+            # Buy immediately on the first bar
+            self.buy()
+            self.log("BUY ORDER SENT")
+        else:
+            # Close the position on the next bar
+            self.log("CLOSING POSITION")
+            self.close()
+
+    def notify_order(self, order):
+        # When an order completes, increment trades_executed if it was a completed trade
+        if order.status in [order.Completed]:
+            # Count both buy and sell completions as trade executions
+            self.trades_executed += 1
+
+    def log(self, txt, dt=None):
+        dt = dt or self.datas[0].datetime.datetime(0)
+        print(f'{dt.isoformat()} {txt}')

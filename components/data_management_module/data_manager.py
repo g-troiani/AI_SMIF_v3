@@ -62,7 +62,6 @@ class DataManager:
             self.tickers = [line.strip() for line in f if line.strip()]
         self.logger.info(f"Loaded {len(self.tickers)} tickers: {self.tickers}")
 
-
     def _save_historical_data(self, ticker, df):
         """Store historical data in the database and then update modeling_data."""
         with self.lock:
@@ -111,7 +110,25 @@ class DataManager:
                             session.rollback()
                             self.logger.warning(f"IntegrityError when saving batch {i//batch_size +1} for {ticker}: {str(ie)}")
                             print(f"CRITICAL DEBUG: IntegrityError when saving batch {i//batch_size +1} for {ticker}: {str(ie)}")
-                            continue
+
+                            # Handle integrity errors gracefully by inserting records one-by-one
+                            # and skipping duplicates
+                            for record in batch:
+                                try:
+                                    session.add(record)
+                                    session.commit()
+                                except IntegrityError:
+                                    session.rollback()
+                                    # Duplicate found, skip this record
+                                    self.logger.info(f"Skipping duplicate record for {ticker} at {record.timestamp}")
+                                    print(f"CRITICAL DEBUG: Skipping duplicate record for {ticker} at {record.timestamp}")
+                                except Exception as e:
+                                    session.rollback()
+                                    self.logger.error(f"Exception when saving single record for {ticker}: {str(e)}")
+                                    print(f"CRITICAL DEBUG: Exception when saving single record for {ticker}: {str(e)}")
+                                    traceback.print_exc()
+                                    raise
+
                         except Exception as e:
                             session.rollback()
                             self.logger.error(f"Exception when saving batch {i//batch_size +1} for {ticker}: {str(e)}")

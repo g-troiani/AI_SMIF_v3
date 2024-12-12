@@ -1,5 +1,3 @@
-// src/components/dashboard/MarketOverview.tsx
-
 import React, { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, ResponsiveContainer } from 'recharts';
 
@@ -11,9 +9,10 @@ interface TrendPoint {
 interface MarketItem {
   symbol: string;
   name: string;
-  price: number;
+  price: number | string; // Adjusted to allow string for BTC
   change: number;
   trend: TrendPoint[];
+  exchange?: string; // If you added exchange info on the backend
 }
 
 const MarketOverview: React.FC = () => {
@@ -28,23 +27,8 @@ const MarketOverview: React.FC = () => {
         const result = await response.json();
 
         if (result.success) {
-          const data: MarketItem[] = result.data.map((item: any) => {
-            // Determine line color based on direction
-            let lineColor = '#16a34a'; 
-            if (item.trend && item.trend.length > 1) {
-              const firstPrice = item.trend[0].price;
-              const lastPrice = item.trend[item.trend.length - 1].price;
-              if (lastPrice < firstPrice) {
-                lineColor = '#dc2626'; 
-              }
-            }
-
-            return {
-              ...item,
-              lineColor
-            };
-          });
-          setMarketData(data);
+          // result.data should be an array of MarketItem
+          setMarketData(result.data);
         } else {
           setError(result.message);
         }
@@ -88,13 +72,24 @@ const MarketOverview: React.FC = () => {
       <h2 className="text-xl font-semibold mb-4">Market Overview</h2>
       <div className="space-y-2">
         {marketData.map((item) => {
-          const trendData = item.trend || [];
-          let lineColor = '#16a34a';
-          if (trendData.length > 1) {
-            const firstPrice = trendData[0].price;
-            const lastPrice = trendData[trendData.length - 1].price;
+          // Handle formatting of the price
+          let priceDisplay: string;
+          if (typeof item.price === 'number') {
+            priceDisplay = item.price.toFixed(2);
+          } else {
+            // If it's a string (like BTC), just use it as is
+            // Assuming BTC is formatted from backend as a string with commas, etc.
+            priceDisplay = item.price;
+          }
+
+          // Determine line color for trend
+          // If trend is available and has more than one point, check first/last to determine up or down
+          let lineColor = '#16a34a'; // green by default
+          if (item.trend && item.trend.length > 1) {
+            const firstPrice = item.trend[0].price;
+            const lastPrice = item.trend[item.trend.length - 1].price;
             if (lastPrice < firstPrice) {
-              lineColor = '#dc2626';
+              lineColor = '#dc2626'; // red if price went down
             }
           }
 
@@ -105,15 +100,15 @@ const MarketOverview: React.FC = () => {
                 <p className="text-sm text-gray-500">{item.symbol}</p>
               </div>
               <div className="text-right">
-                <p className="text-lg font-semibold text-gray-900">${item.price.toFixed(2)}</p>
+                <p className="text-lg font-semibold text-gray-900">${priceDisplay}</p>
                 <p className={`text-sm ${item.change >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                   {(item.change >= 0 ? '+' : '')}{item.change.toFixed(2)}%
                 </p>
               </div>
               <div style={{ width: 80, height: 40 }} className="flex justify-center items-center">
-                {trendData.length > 0 && (
+                {item.trend && item.trend.length > 0 && (
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={trendData} margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
+                    <LineChart data={item.trend} margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
                       <XAxis dataKey="time" hide={true} padding={{ left: 10, right: 10 }} />
                       <Line type="monotone" dataKey="price" stroke={lineColor} strokeWidth={2} dot={false} />
                     </LineChart>
