@@ -15,6 +15,17 @@ import logging
 import requests
 from flask import jsonify
 import pytz
+import sqlite3
+
+
+
+# Ensure the directory structure exist for plots
+import os
+
+if not os.path.exists('static'):
+    os.makedirs('static')
+if not os.path.exists('static/plots'):
+    os.makedirs('static/plots')
 
 # Configure logging with more detailed formatting
 logging.basicConfig(
@@ -490,8 +501,159 @@ def get_dashboard_data():
             'message': str(e)
         }), 500
         
-        
-        
+
+     
+@app.route('/api/market-overview', methods=['GET'])
+def market_overview():
+    """Fetch market data for key symbols."""
+    try:
+        symbols = {
+            'SPY': "S&P 500",
+            'QQQ': "NASDAQ",
+            'IWV': "Russell 3000",
+            'BTCUSD': "Bitcoin",
+            'GLD': "Gold",
+            'VXX': "VIX",
+            'EWJ': "Japan (XJPX Proxy)",
+            'EWU': "UK (XLON Proxy)"
+        }
+
+        base_url = "https://data.alpaca.markets"
+        headers = {
+            "APCA-API-KEY-ID": os.getenv('APCA_API_KEY_ID', ''),
+            "APCA-API-SECRET-KEY": os.getenv('APCA_API_SECRET_KEY', '')
+        }
+
+        # Separate stock symbols from crypto
+        stock_symbols = [sym for sym in symbols.keys() if sym != 'BTCUSD']
+
+        market_data = []
+
+        # Fetch stocks/ETFs current price and daily change
+        for sym in stock_symbols:
+            # Latest quote
+            quote_url = f"{base_url}/v2/stocks/{sym}/quotes/latest"
+            r = requests.get(quote_url, headers=headers)
+            if r.status_code == 200:
+                json_resp = r.json()
+                if 'quote' in json_resp:
+                    quote = json_resp['quote']
+                    current_price = float(quote.get('ap', 0.0))
+                else:
+                    current_price = 0.0
+            else:
+                current_price = 0.0
+
+            # Previous close
+            bars_url = f"{base_url}/v2/stocks/{sym}/bars?timeframe=1Day&limit=2"
+            br = requests.get(bars_url, headers=headers)
+            if br.status_code == 200:
+                bars = br.json().get('bars', [])
+                if len(bars) == 2:
+                    prev_close = float(bars[0]['c'])
+                    # If current_price not available from ask, fallback to today's close
+                    if current_price <= 0:
+                        current_price = float(bars[1]['c'])
+                    change_percent = ((current_price - prev_close) / prev_close * 100) if prev_close != 0 else 0.0
+                else:
+                    change_percent = 0.0
+            else:
+                change_percent = 0.0
+
+            market_data.append({
+                'symbol': sym,
+                'name': symbols[sym],
+                'price': current_price,
+                'change': change_percent
+            })
+
+        # Crypto (BTCUSD)
+        crypto_quote_url = "https://data.alpaca.markets/v1beta3/crypto/us/latest/quotes?symbols=BTCUSD"
+        cr = requests.get(crypto_quote_url, headers=headers)
+        if cr.status_code == 200:
+            cdata = cr.json()
+            if 'quotes' in cdata and 'BTCUSD' in cdata['quotes']:
+                cq = cdata['quotes']['BTCUSD']
+                current_price = float(cq['ap']) if cq['ap'] else float(cq['bp'])
+            else:
+                current_price = 0.0
+        else:
+            current_price = 0.0
+
+        # Previous close for BTC
+        crypto_bars_url = "https://data.alpaca.markets/v1beta3/crypto/us/bars?symbols=BTCUSD&timeframe=1Day&limit=2"
+        cbr = requests.get(crypto_bars_url, headers=headers)
+        if cbr.status_code == 200:
+            cbars = cbr.json().get('bars', {}).get('BTCUSD', [])
+            if len(cbars) == 2:
+                prev_close = float(cbars[0]['c'])
+                if current_price <= 0:
+                    current_price = float(cbars[1]['c'])
+                change_percent = ((current_price - prev_close) / prev_close * 100) if prev_close != 0 else 0.0
+            else:
+                change_percent = 0.0
+        else:
+            change_percent = 0.0
+
+        market_data.append({
+            'symbol': 'BTCUSD',
+            'name': symbols['BTCUSD'],
+            'price': current_price,
+            'change': change_percent
+        })
+
+        # Now fetch the past 5 hour price datapoints for trend lines
+        # Stocks:
+        if stock_symbols:
+            stock_symbols_str = ",".join(stock_symbols)
+            hourly_bars_url = f"{base_url}/v2/stocks/bars?symbols={stock_symbols_str}&timeframe=1Hour&limit=5"
+            hr = requests.get(hourly_bars_url, headers=headers)
+            if hr.status_code == 200:
+                stock_hourly_data = hr.json().get('bars', {})
+            else:
+                stock_hourly_data = {}
+        else:
+            stock_hourly_data = {}
+
+        # Crypto hourly bars for BTCUSD
+        crypto_hourly_bars_url = "https://data.alpaca.markets/v1beta3/crypto/us/bars?symbols=BTCUSD&timeframe=1Hour&limit=5"
+        chr_ = requests.get(crypto_hourly_bars_url, headers=headers)
+        if chr_.status_code == 200:
+            crypto_hourly_data = chr_.json().get('bars', {}).get('BTCUSD', [])
+        else:
+            crypto_hourly_data = []
+
+        # Integrate hourly trend data into market_data
+        # For stocks:
+        for item in market_data:
+            sym = item['symbol']
+            if sym == 'BTCUSD':
+                # Crypto trend data
+                trend = []
+                for b in crypto_hourly_data:
+                    trend.append({'time': b['t'], 'price': float(b['c'])})
+                item['trend'] = trend
+            else:
+                # Stocks
+                bars = stock_hourly_data.get(sym, [])
+                trend = []
+                for b in bars:
+                    trend.append({'time': b['t'], 'price': float(b['c'])})
+                item['trend'] = trend
+
+        return jsonify({
+            'success': True,
+            'data': market_data
+        })
+
+    except Exception as e:
+        logger.error(f"Error fetching market overview: {str(e)}")
+        logger.debug(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+    
         
         
 
@@ -515,11 +677,10 @@ def run_backtest():
     symbol = data.get('symbol')
     start_date = data.get('start_date')
     end_date = data.get('end_date')
-    # Optional parameters such as stop_loss, take_profit could be included if your UI sends them:
+    # Optional parameters
     stop_loss = data.get('stop_loss')
     take_profit = data.get('take_profit')
-    #trading_hours_start
-    #trading_hours_end
+
     try:
         start_dt = pd.to_datetime(start_date)
         end_dt = pd.to_datetime(end_date)
@@ -540,10 +701,54 @@ def run_backtest():
         )
         backtester.run_backtest()
 
+        # Retrieve the metrics we just saved from the database
+        conn = sqlite3.connect('data/backtesting_results.db')
+        cursor = conn.cursor()
+
+        # Get the most recent backtest record for this strategy/ticker/date combination
+        cursor.execute('''
+            SELECT strategy_name, ticker, start_date, end_date, cagr, total_pct_change, std_dev, annual_vol, sharpe_ratio,
+                   sortino_ratio, max_drawdown, win_rate, num_trades, information_ratio, strategy_unique_id
+            FROM backtest_summary
+            WHERE strategy_name = ? AND ticker = ? AND start_date = ? AND end_date = ?
+            ORDER BY id DESC LIMIT 1
+        ''', (strategy_name, symbol, start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S')))
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            # Extract metrics
+            metrics = {
+                'strategy_name': row[0],
+                'ticker': row[1],
+                'start_date': row[2],
+                'end_date': row[3],
+                'cagr': row[4],
+                'total_return_pct': row[5],
+                'std_dev': row[6],
+                'annual_vol': row[7],
+                'sharpe_ratio': row[8],
+                'sortino_ratio': row[9],
+                'max_drawdown': row[10],
+                'win_rate': row[11],
+                'num_trades': row[12],
+                'information_ratio': row[13],
+                'strategy_unique_id': row[14]
+            }
+        else:
+            metrics = None
+
+        # Return the plot_url if we have it
+        plot_filename = getattr(backtester, 'plot_filename', None)
+        plot_url = None
+        if plot_filename:
+            plot_url = '/' + plot_filename.replace('\\', '/').lstrip('/')
+
         return jsonify({
             'success': True,
-            'message': 'Backtest completed successfully'
-            # Optionally return a backtest_id or unique_id if you want to fetch results later.
+            'message': 'Backtest completed successfully',
+            'plot_url': plot_url,
+            'metrics': metrics  # Return the metrics we just fetched
         })
 
     except Exception as e:
@@ -551,6 +756,8 @@ def run_backtest():
             'success': False,
             'message': str(e)
         }), 500
+
+
 
 
 

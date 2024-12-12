@@ -250,7 +250,7 @@ class Backtester:
 
             # Make the plot prettier
             # Set a nicer style
-            figs = cerebro.plot(style='candle', barup='green', bardown='red', volume=False)
+            figs = cerebro.plot(style='candle', barup='green', bardown='red', volume=False, show=False)
             fig = figs[0][0]
 
             # Customize figure
@@ -258,7 +258,11 @@ class Backtester:
             fig.savefig(plot_filename, dpi=300, bbox_inches='tight')
             plt.close(fig)
 
-            self.save_plot_filename(plot_filename)
+            # Save plot to static/plots directory
+            plot_filename = f"static/plots/backtest_plot_{self.strategy_name}_{self.ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            fig.savefig(plot_filename, dpi=300, bbox_inches='tight')
+            self.plot_filename = plot_filename
+            # self.save_plot_filename(plot_filename)
 
         except Exception as e:
             logging.error(f"Error during backtest: {e}")

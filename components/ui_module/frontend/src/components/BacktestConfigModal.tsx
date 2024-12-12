@@ -4,9 +4,10 @@ import { XMarkIcon } from '@heroicons/react/24/outline';
 interface BacktestConfigModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onBacktestComplete?: (plotUrl?: string, metrics?: any) => void;
 }
 
-const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClose }) => {
+const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClose, onBacktestComplete }) => {
   const [strategies, setStrategies] = useState<string[]>([]);
   const [formData, setFormData] = useState({
     strategy: '',
@@ -19,9 +20,11 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
       start: '09:30',
       end: '16:00'
     },
-    stopLoss: '',    // new
-    takeProfit: ''   // new
+    stopLoss: '',
+    takeProfit: ''
   });
+
+  const [isRunning, setIsRunning] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -41,6 +44,7 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
   }, [isOpen]);
 
   const handleRunBacktest = () => {
+    setIsRunning(true);
     const payload = {
       strategy: formData.strategy,
       symbol: formData.symbol,
@@ -57,13 +61,20 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
     })
     .then(res => res.json())
     .then(data => {
+      setIsRunning(false);
       if (data.success) {
+        // If backtest completed successfully, call onBacktestComplete if provided
+        if (onBacktestComplete) {
+          onBacktestComplete(data.plot_url, data.metrics);
+        }
+        // Close the modal automatically after success
         onClose();
       } else {
         console.error('Error running backtest:', data.message);
       }
     })
     .catch(err => {
+      setIsRunning(false);
       console.error('Network error running backtest:', err);
     });
   };
@@ -81,30 +92,56 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
         </div>
 
         <div className="p-6 space-y-6">
+          {isRunning && (
+            <div className="text-center text-gray-700 mb-4">
+              <span className="inline-block mr-2">Running backtest...</span>
+              <div className="inline-block w-4 h-4 border-2 border-gray-300 border-t-transparent border-solid rounded-full animate-spin"></div>
+            </div>
+          )}
+
+          {/* Form Fields */}
           <div className="grid grid-cols-2 gap-6">
             <div>
               <label className="block text-sm font-medium text-gray-700">Strategy</label>
               <select
                 value={formData.strategy}
-                onChange={(e) => setFormData(prev => ({ ...prev, strategy: e.target.value }))}
+                onChange={e => setFormData({ ...formData, strategy: e.target.value })}
                 className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
               >
                 <option value="">Select a strategy</option>
-                {strategies.map(strategy => (
-                  <option key={strategy} value={strategy}>
-                    {strategy.replace(/([A-Z])/g, ' $1').trim()}
-                  </option>
+                {strategies.map((strat, i) => (
+                  <option key={i} value={strat}>{strat}</option>
                 ))}
               </select>
             </div>
-
             <div>
               <label className="block text-sm font-medium text-gray-700">Symbol</label>
               <input
                 type="text"
-                placeholder="e.g., AAPL"
                 value={formData.symbol}
-                onChange={(e) => setFormData(prev => ({ ...prev, symbol: e.target.value }))}
+                onChange={e => setFormData({ ...formData, symbol: e.target.value })}
+                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+                placeholder="AAPL"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-6">
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Start Date</label>
+              <input
+                type="date"
+                value={formData.dateRange.start}
+                onChange={e => setFormData({ ...formData, dateRange: { ...formData.dateRange, start: e.target.value } })}
+                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700">End Date</label>
+              <input
+                type="date"
+                value={formData.dateRange.end}
+                onChange={e => setFormData({ ...formData, dateRange: { ...formData.dateRange, end: e.target.value } })}
                 className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
               />
             </div>
@@ -112,64 +149,12 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
 
           <div className="grid grid-cols-2 gap-6">
             <div>
-              <label className="block text-sm font-medium text-gray-700">Date Range</label>
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  type="date"
-                  value={formData.dateRange.start}
-                  onChange={(e) => setFormData(prev => ({
-                    ...prev,
-                    dateRange: { ...prev.dateRange, start: e.target.value }
-                  }))}
-                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
-                />
-                <input
-                  type="date"
-                  value={formData.dateRange.end}
-                  onChange={(e) => setFormData(prev => ({
-                    ...prev,
-                    dateRange: { ...prev.dateRange, end: e.target.value }
-                  }))}
-                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700">Trading Hours</label>
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  type="time"
-                  value={formData.tradingHours.start}
-                  onChange={(e) => setFormData(prev => ({
-                    ...prev,
-                    tradingHours: { ...prev.tradingHours, start: e.target.value }
-                  }))}
-                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
-                />
-                <input
-                  type="time"
-                  value={formData.tradingHours.end}
-                  onChange={(e) => setFormData(prev => ({
-                    ...prev,
-                    tradingHours: { ...prev.tradingHours, end: e.target.value }
-                  }))}
-                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* New fields for stop loss and take profit */}
-          <div className="grid grid-cols-2 gap-6">
-            <div>
               <label className="block text-sm font-medium text-gray-700">Stop Loss (%)</label>
               <input
                 type="number"
                 step="0.1"
-                placeholder="e.g. 2 for 2%"
                 value={formData.stopLoss}
-                onChange={(e) => setFormData(prev => ({ ...prev, stopLoss: e.target.value }))}
+                onChange={e => setFormData({ ...formData, stopLoss: e.target.value })}
                 className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
               />
             </div>
@@ -178,29 +163,29 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
               <input
                 type="number"
                 step="0.1"
-                placeholder="e.g. 5 for 5%"
                 value={formData.takeProfit}
-                onChange={(e) => setFormData(prev => ({ ...prev, takeProfit: e.target.value }))}
+                onChange={e => setFormData({ ...formData, takeProfit: e.target.value })}
                 className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
               />
             </div>
           </div>
-          {/* End new fields */}
 
           <div className="flex justify-end space-x-4 pt-4">
             <button
               type="button"
               onClick={onClose}
               className="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50"
+              disabled={isRunning}
             >
               Cancel
             </button>
             <button
               type="button"
               onClick={handleRunBacktest}
-              className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700"
+              className={`px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white ${isRunning ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}`}
+              disabled={isRunning}
             >
-              Run Backtest
+              {isRunning ? 'Running...' : 'Run Backtest'}
             </button>
           </div>
         </div>

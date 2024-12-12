@@ -1,8 +1,40 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import BacktestConfigModal from '../components/BacktestConfigModal';
+
+interface BacktestMetrics {
+  strategy_name: string;
+  ticker: string;
+  start_date: string;
+  end_date: string;
+  cagr: number;
+  total_return_pct: number;
+  std_dev: number | null;
+  annual_vol: number | null;
+  sharpe_ratio: number | null;
+  sortino_ratio: number | null;
+  max_drawdown: number | null;
+  win_rate: number | null;
+  num_trades: number | null;
+  information_ratio: number | null;
+  strategy_unique_id: string;
+}
 
 const Backtest: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [plotUrl, setPlotUrl] = useState<string | null>(null);
+  const [backtestResults, setBacktestResults] = useState<BacktestMetrics[]>([]);
+
+  // Adjust handleBacktestComplete to accept optional metrics
+  const handleBacktestComplete = (url?: string, metrics?: BacktestMetrics) => {
+    if (url) setPlotUrl(url);
+    if (metrics) {
+      setBacktestResults(prev => [...prev, metrics]);
+    }
+  };
+
+  useEffect(() => {
+    // If needed, we can load previously saved results here
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -19,6 +51,7 @@ const Backtest: React.FC = () => {
       <BacktestConfigModal 
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
+        onBacktestComplete={handleBacktestComplete}
       />
 
       <div className="bg-white shadow rounded-lg">
@@ -48,10 +81,64 @@ const Backtest: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {/* Backtest results will be listed here */}
+              {/* If you want a quick summary per result, map them here */}
             </tbody>
           </table>
         </div>
+      </div>
+
+      <h2 className="text-2xl font-bold text-gray-900">Backtest Results</h2>
+      {plotUrl && (
+        <div>
+          <h3 className="text-lg font-medium text-gray-900 mb-4">Backtest Chart</h3>
+          <img src={plotUrl} alt="Backtest Plot" className="border rounded shadow-lg max-w-full" />
+        </div>
+      )}
+
+      {/* Scrollable table for all metrics */}
+      <div className="overflow-x-auto border border-gray-200 rounded-lg">
+        <table className="min-w-max text-sm text-left whitespace-nowrap">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="px-4 py-2">Strategy Name</th>
+              <th className="px-4 py-2">Ticker</th>
+              <th className="px-4 py-2">Start Date</th>
+              <th className="px-4 py-2">End Date</th>
+              <th className="px-4 py-2">CAGR</th>
+              <th className="px-4 py-2">Total Return %</th>
+              <th className="px-4 py-2">Std Dev</th>
+              <th className="px-4 py-2">Annual Vol</th>
+              <th className="px-4 py-2">Sharpe Ratio</th>
+              <th className="px-4 py-2">Sortino Ratio</th>
+              <th className="px-4 py-2">Max Drawdown</th>
+              <th className="px-4 py-2">Win Rate</th>
+              <th className="px-4 py-2"># of Trades</th>
+              <th className="px-4 py-2">Information Ratio</th>
+              <th className="px-4 py-2">Strategy Unique ID</th>
+            </tr>
+          </thead>
+          <tbody>
+            {backtestResults.map((res, i) => (
+              <tr key={i} className="border-t">
+                <td className="px-4 py-2">{res.strategy_name}</td>
+                <td className="px-4 py-2">{res.ticker}</td>
+                <td className="px-4 py-2">{res.start_date}</td>
+                <td className="px-4 py-2">{res.end_date}</td>
+                <td className="px-4 py-2">{(res.cagr * 100).toFixed(2)}%</td>
+                <td className="px-4 py-2">{res.total_return_pct.toFixed(2)}%</td>
+                <td className="px-4 py-2">{res.std_dev !== null ? res.std_dev.toFixed(4) : 'N/A'}</td>
+                <td className="px-4 py-2">{res.annual_vol !== null ? res.annual_vol.toFixed(4) : 'N/A'}</td>
+                <td className="px-4 py-2">{res.sharpe_ratio !== null ? res.sharpe_ratio.toFixed(2) : 'N/A'}</td>
+                <td className="px-4 py-2">{res.sortino_ratio !== null ? res.sortino_ratio.toFixed(2) : 'N/A'}</td>
+                <td className="px-4 py-2">{res.max_drawdown !== null ? `${res.max_drawdown.toFixed(2)}%` : 'N/A'}</td>
+                <td className="px-4 py-2">{res.win_rate !== null ? `${res.win_rate.toFixed(2)}%` : 'N/A'}</td>
+                <td className="px-4 py-2">{res.num_trades !== null ? res.num_trades : 'N/A'}</td>
+                <td className="px-4 py-2">{res.information_ratio !== null ? res.information_ratio.toFixed(2) : 'N/A'}</td>
+                <td className="px-4 py-2">{res.strategy_unique_id}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );

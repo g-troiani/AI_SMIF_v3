@@ -11,13 +11,11 @@ import {
   ResponsiveContainer
 } from 'recharts';
 
-// Define the structure of each data point
 interface PortfolioData {
-  date: string;  // Format: 'YYYY-MM-DD'
-  value: number; // Portfolio value on the given date
+  date: string;  
+  value: number; 
 }
 
-// Define the structure of the fetched data
 interface ChartData {
   history: PortfolioData[];
   currentBalance: number;
@@ -25,20 +23,12 @@ interface ChartData {
 }
 
 const DashboardChart: React.FC = () => {
-  // Define available time filters
   const timeFilters: Array<'1D' | '1W' | '1M' | '3M' | '1Y' | 'ALL'> = ['1D', '1W', '1M', '3M', '1Y', 'ALL'];
-  
-  // State to manage the selected time filter
   const [timeFilter, setTimeFilter] = useState<'1D' | '1W' | '1M' | '3M' | '1Y' | 'ALL'>('1M');
-  
-  // State to manage fetched data
   const [data, setData] = useState<ChartData | null>(null);
-  
-  // Loading and error states
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch data whenever the time filter changes
   useEffect(() => {
     const fetchData = async () => {
       setLoading(true);
@@ -47,7 +37,6 @@ const DashboardChart: React.FC = () => {
         const response = await fetch(`/api/portfolio/history?period=${timeFilter}`);
         const result = await response.json();
         if (result.success) {
-          // Ensure that 'value' is a number
           const processedData: ChartData = {
             history: result.data.history.map((item: any) => ({
               date: item.date,
@@ -69,13 +58,10 @@ const DashboardChart: React.FC = () => {
     };
 
     fetchData();
-
-    // Optional: Polling every 60 seconds
     const interval = setInterval(fetchData, 60000);
     return () => clearInterval(interval);
   }, [timeFilter]);
 
-  // Helper function to format currency
   const formatCurrency = (value: number): string => {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
@@ -85,42 +71,20 @@ const DashboardChart: React.FC = () => {
     }).format(value);
   };
 
-  // Determine Y-axis domain based on data
-  const getYAxisDomain = (history: PortfolioData[]): [number, number] => {
-    const values = history.map(item => item.value);
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-    const padding = (max - min) * 0.1; // 10% padding
-    return [min - padding, max + padding];
-  };
-
-  // Generate Y-axis ticks (e.g., min, currentBalance, max)
-  const getYAxisTicks = (min: number, max: number, currentBalance: number): number[] => {
-    return [min, currentBalance, max];
-  };
-
-  // Render loading state
   if (loading) {
     return <div className="text-center">Loading...</div>;
   }
 
-  // Render error state
   if (error) {
     return <div className="text-center text-red-500">{error}</div>;
   }
 
-  // Render no data state
   if (!data || !data.history.length) {
     return <div className="text-center">No data available.</div>;
   }
 
-  // Calculate Y-axis domain and ticks
-  const yAxisDomain = getYAxisDomain(data.history);
-  const yAxisTicks = getYAxisTicks(yAxisDomain[0], yAxisDomain[1], data.currentBalance);
-
   return (
     <div>
-      {/* Current Balance and Percentage Change */}
       <div className="mt-2">
         <p className="text-2xl font-semibold">{formatCurrency(data.currentBalance)}</p>
         <p className={`text-sm ${data.percentageChange >= 0 ? 'text-green-500' : 'text-red-500'}`}>
@@ -129,7 +93,6 @@ const DashboardChart: React.FC = () => {
         </p>
       </div>
 
-      {/* Time Filter Buttons */}
       <div className="flex space-x-2 mt-4">
         {timeFilters.map((period) => (
           <button
@@ -146,8 +109,7 @@ const DashboardChart: React.FC = () => {
         ))}
       </div>
 
-      {/* Line Chart */}
-      <div className="h-64 mt-4">
+      <div className="h-64 mt-4 flex justify-center items-center">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
             data={data.history}
@@ -163,16 +125,14 @@ const DashboardChart: React.FC = () => {
               dataKey="date"
               tickFormatter={(dateStr: string) => {
                 const date = new Date(dateStr);
-                // Format as MM/DD
                 return `${date.getMonth() + 1}/${date.getDate()}`;
               }}
-              stroke="#4B5563" // Gray-700
+              stroke="#4B5563"
             />
             <YAxis
-              domain={yAxisDomain}
-              ticks={yAxisTicks}
+              domain={['dataMin', 'dataMax']}
               tickFormatter={(value: number) => formatCurrency(value)}
-              stroke="#4B5563" // Gray-700
+              stroke="#4B5563"
             />
             <Tooltip
               formatter={(value: number) => formatCurrency(value)}
@@ -184,7 +144,7 @@ const DashboardChart: React.FC = () => {
             <Line
               type="monotone"
               dataKey="value"
-              stroke="#3b82f6" // Blue-500
+              stroke={data.percentageChange >= 0 ? "#16a34a" : "#dc2626"}
               dot={false}
               isAnimationActive={false}
             />
