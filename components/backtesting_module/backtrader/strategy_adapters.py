@@ -3,6 +3,17 @@
 
 import backtrader as bt
 
+
+from .strategies import (
+    MovingAverageCrossoverStrategy,
+    RSIStrategy,
+    MACDStrategy,
+    BollingerBandsStrategy,
+    MomentumStrategy,
+    PAUL_RSIStrategy,
+)
+
+
 class MovingAverageCrossoverStrategy(bt.Strategy):
     """Moving Average Crossover Strategy Implementation"""
     params = (
@@ -148,7 +159,8 @@ class StrategyAdapter:
         'RSI': RSIStrategy,
         'MACD': MACDStrategy,
         'BollingerBands': BollingerBandsStrategy,
-        'Momentum': MomentumStrategy
+        'Momentum': MomentumStrategy,
+        'PAUL_RSIStrategy': PAUL_RSIStrategy,
     }
 
     @staticmethod
