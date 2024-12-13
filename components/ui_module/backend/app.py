@@ -504,169 +504,170 @@ def get_dashboard_data():
 
      
 
+from flask import Flask, jsonify
+from flask_cors import CORS
 import os
+import logging
 import requests
-import traceback
-from flask import jsonify
-from datetime import datetime, timedelta
+from datetime import datetime
+import pytz
+from typing import Dict, List, Optional, Union
 
-@app.route('/api/market-overview', methods=['GET'])
-def market_overview():
-    """Fetch current price and % change from the first 5-minute bar of the day for both stocks and BTC."""
-    try:
-        symbols = {
-            'SPY': "S&P 500",
-            'QQQ': "NASDAQ",
-            'IWV': "Russell 3000",
-            'GLD': "Gold",
-            'VXX': "VIX",
-            'EWJ': "Japan (XJPX Proxy)",
-            'EWU': "UK (XLON Proxy)",
-            'BTC/USD': "Bitcoin"
-        }
+# # Configure logging
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+# )
+# logger = logging.getLogger(__name__)
 
-        base_url = "https://data.alpaca.markets"
-        headers = {
+# app = Flask(__name__)
+# CORS(app)
+
+# Market symbols configuration
+MARKET_SYMBOLS = {
+    'SPY': "S&P 500",
+    'QQQ': "NASDAQ",
+    'IWV': "Russell 3000",
+    'GLD': "Gold",
+    'VXX': "VIX",
+    'EWJ': "Japan (XJPX Proxy)",
+    'EWU': "UK (XLON Proxy)",
+    'BTC/USD': "Bitcoin"
+}
+
+class MarketData:
+    def __init__(self):
+        self.base_url = "https://data.alpaca.markets"
+        self.headers = {
             "APCA-API-KEY-ID": os.getenv('APCA_API_KEY_ID', ''),
             "APCA-API-SECRET-KEY": os.getenv('APCA_API_SECRET_KEY', ''),
             "accept": "application/json"
         }
 
-        stock_symbols = [s for s in symbols if s != 'BTC/USD']
-        market_data = []
-
-        # Define times for the first 5-min bar of the trading day for stocks
-        # Assuming market open at 09:30 ET (13:30 UTC), we'll capture the bar that starts at 09:30.
-        today = datetime.utcnow().date().isoformat()
-        stock_start_time = f"{today}T09:30:00-04:00"
-        stock_end_time = f"{today}T09:40:00-04:00"
-        stock_params = {
-            "timeframe": "5Min",
-            "start": stock_start_time,
-            "end": stock_end_time,
-            "limit": 1,
-            "feed": "sip"
-        }
-
-        # For BTC, since crypto runs 24/7, let's consider midnight UTC as the "start of the day".
-        btc_start_time = f"{today}T00:00:00Z"
-        btc_end_time = f"{today}T00:10:00Z"
-        btc_params = {
-            "symbols": "BTC/USD",
-            "timeframe": "5Min",
-            "start": btc_start_time,
-            "end": btc_end_time,
-            "limit": 1
-        }
-
-        def get_latest_stock_close(symbol):
-            # Latest stock close from latest bar endpoint
-            url = f"{base_url}/v2/stocks/{symbol}/bars/latest?feed=sip"
-            r = requests.get(url, headers=headers)
-            r.raise_for_status()
-            data = r.json()
-            bar = data.get("bar", {})
-            return bar.get('c', None)
-
-        def get_first_stock_bar_close(symbol):
-            # First 5-min bar close of the trading day for stock
-            url = f"{base_url}/v2/stocks/{symbol}/bars"
-            r = requests.get(url, headers=headers, params=stock_params)
-            r.raise_for_status()
-            data = r.json()
-            bars = data.get("bars", [])
-            if bars:
-                return bars[0].get('c', None)
-            return None
-
-        def get_btc_current_price():
-            # Current BTC price from snapshot
-            crypto_url = f"{base_url}/v1beta3/crypto/us/snapshots?symbols=BTC/USD"
-            cr = requests.get(crypto_url, headers=headers)
-            cr.raise_for_status()
-            crypto_snap = cr.json().get('snapshots', {}).get('BTC/USD', {})
-            latest_trade = crypto_snap.get('latestTrade', {})
-            daily_bar = crypto_snap.get('dailyBar', {})
-
-            if 'p' in latest_trade and latest_trade['p'] > 0:
-                return latest_trade['p']
-            elif 'c' in daily_bar and daily_bar['c'] > 0:
-                return daily_bar['c']
-            return None
-
-        def get_btc_first_bar_close():
-            # First 5-min bar after midnight UTC for BTC
-            crypto_bars_url = f"{base_url}/v1beta3/crypto/us/bars"
-            r = requests.get(crypto_bars_url, headers=headers, params=btc_params)
-            r.raise_for_status()
-            data = r.json()
-            bars = data.get("bars", {}).get("BTC/USD", [])
-            if bars:
-                return bars[0].get('c', None)
-            return None
-
-        # Compute data for stock symbols
-        for sym in stock_symbols:
-            try:
-                latest_close = get_latest_stock_close(sym)
-                first_close = get_first_stock_bar_close(sym)
-                if latest_close is None or first_close is None:
-                    continue
-
-                change_percent = ((latest_close - first_close) / first_close) * 100
-                market_data.append({
-                    'symbol': sym,
-                    'name': symbols[sym],
-                    'price': latest_close,
-                    'change': change_percent
-                })
-            except requests.exceptions.RequestException as e:
-                print(f"Error fetching data for {sym}: {e}")
-                continue
-            except Exception as e:
-                print(f"General error for {sym}: {e}")
-                continue
-
-        # Compute data for BTC
+    def get_stock_data(self, symbol: str) -> Optional[Dict]:
+        """Get current price and previous close for a stock."""
         try:
-            btc_current_price = get_btc_current_price()
-            btc_first_close = get_btc_first_bar_close()
-            formatted_btc_price = "{:,.2f}".format(btc_current_price) if btc_current_price is not None else "N/A"
-            btc_change = 0.0
-            if btc_current_price is not None and btc_first_close is not None and btc_first_close > 0:
-                btc_change = ((btc_current_price - btc_first_close) / btc_first_close) * 100
+            # Get latest price from snapshot
+            snapshot_resp = requests.get(
+                f"{self.base_url}/v2/stocks/{symbol}/snapshot",
+                headers=self.headers,
+                params={"feed": "sip"}
+            )
+            snapshot_resp.raise_for_status()
+            snapshot_data = snapshot_resp.json()
+            current_price = snapshot_data.get('latestTrade', {}).get('p')
+            prev_close = snapshot_data.get('prevDailyBar', {}).get('c')
 
-            market_data.append({
-                'symbol': 'BTC/USD',
-                'name': symbols['BTC/USD'],
-                'price': formatted_btc_price,
-                'change': btc_change
-            })
+            return {
+                'current_price': current_price,
+                'prev_close': prev_close
+            }
         except Exception as e:
-            print(f"Error fetching BTC data: {e}")
-            # If error, still return at least what we have
-            market_data.append({
-                'symbol': 'BTC/USD',
-                'name': symbols['BTC/USD'],
-                'price': "N/A",
-                'change': 0.0
-            })
+            logger.error(f"Error fetching stock data for {symbol}: {e}")
+            return None
 
+    def get_crypto_data(self, symbol: str) -> Optional[Dict]:
+        """Get current price and previous close for crypto."""
+        try:
+            # Get latest trade
+            trade_resp = requests.get(
+                f"{self.base_url}/v1beta3/crypto/us/latest/trades",
+                headers=self.headers,
+                params={"symbols": symbol}
+            )
+            trade_resp.raise_for_status()
+            current_price = trade_resp.json().get('trades', {}).get(symbol, {}).get('p')
+
+            # Get previous day's close
+            bars_resp = requests.get(
+                f"{self.base_url}/v1beta3/crypto/us/bars",
+                headers=self.headers,
+                params={
+                    "symbols": symbol,
+                    "timeframe": "1Day",
+                    "limit": 2
+                }
+            )
+            bars_resp.raise_for_status()
+            bars = bars_resp.json().get('bars', {}).get(symbol, [])
+            prev_close = bars[0].get('c') if bars else None
+
+            return {
+                'current_price': current_price,
+                'prev_close': prev_close
+            }
+        except Exception as e:
+            logger.error(f"Error fetching crypto data for {symbol}: {e}")
+            return None
+
+    @staticmethod
+    def calculate_change(current: float, previous: float) -> float:
+        """Calculate percentage change between two values."""
+        if not (current and previous and previous != 0):
+            return 0.0
+        return ((current - previous) / previous) * 100
+
+@app.route('/api/market-overview', methods=['GET'])
+def market_overview():
+    """Get market overview data for all tracked symbols."""
+    try:
+        market_data = []
+        market_service = MarketData()
+
+        for symbol, name in MARKET_SYMBOLS.items():
+            try:
+                # Get price data based on symbol type
+                if symbol == 'BTC/USD':
+                    data = market_service.get_crypto_data(symbol)
+                else:
+                    data = market_service.get_stock_data(symbol)
+
+                if data and data['current_price']:
+                    # Calculate change and format price
+                    change = market_service.calculate_change(
+                        data['current_price'], 
+                        data['prev_close']
+                    )
+                    
+                    market_data.append({
+                        'symbol': symbol,
+                        'name': name,
+                        'price': f"{data['current_price']:,.2f}",
+                        'change': round(change, 2)
+                    })
+                else:
+                    # Add placeholder data if fetch failed
+                    market_data.append({
+                        'symbol': symbol,
+                        'name': name,
+                        'price': 'N/A',
+                        'change': 0.0
+                    })
+
+            except Exception as e:
+                logger.error(f"Error processing {symbol}: {e}")
+                # Maintain symbol visibility even on error
+                market_data.append({
+                    'symbol': symbol,
+                    'name': name,
+                    'price': 'N/A',
+                    'change': 0.0
+                })
+
+        # Sort market data by symbol
+        market_data.sort(key=lambda x: x['symbol'])
+        
         return jsonify({
             'success': True,
             'data': market_data
         })
 
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching market overview: {e}")
-        print(traceback.format_exc())
-        return jsonify({'success': False, 'message': str(e)}), 500
     except Exception as e:
-        print(f"Error fetching market overview: {e}")
-        print(traceback.format_exc())
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-
+        logger.error(f"General error in market overview: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
 
 
 

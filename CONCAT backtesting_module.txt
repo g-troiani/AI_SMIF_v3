@@ -5002,74 +5002,195 @@ class ImmediateActionStrategy(bt.Strategy):
 
 
 
+# class PAUL_RSIStrategy(bt.Strategy):
+#     """
+#     PAUL_RSI Strategy:
+#     Detects bullish and bearish divergences on RSI and trades accordingly.
+#     """
+#     params = (
+#         ('rsi_period', 14),
+#         ('overbought', 70),
+#         ('oversold', 30),
+#         ('target_rsi', 50),
+#         ('risk_percent', 0.02),  # e.g., 2% risk management
+#     )
+
+#     def __init__(self):
+#         self.rsi = bt.indicators.RSI(self.data.close, period=self.params.rsi_period)
+#         self.bullish_divergence = False
+#         self.bearish_divergence = False
+#         self.entry_price = None
+
+#     def detect_divergence(self):
+#         lows = self.data.low
+#         highs = self.data.high
+#         rsi = self.rsi
+
+#         # Detect Bullish Divergence: price lower lows, RSI higher highs
+#         if lows[-1] < lows[-2] and rsi[-1] > rsi[-2]:
+#             self.bullish_divergence = True
+#             self.bearish_divergence = False
+
+#         # Detect Bearish Divergence: price higher highs, RSI lower lows
+#         elif highs[-1] > highs[-2] and rsi[-1] < rsi[-2]:
+#             self.bullish_divergence = False
+#             self.bearish_divergence = True
+
+#     def next(self):
+#         self.detect_divergence()
+
+#         # Entry logic
+#         if self.bullish_divergence and not self.position:
+#             self.entry_price = self.data.close[0]
+#             stop_loss = self.entry_price * (1 - self.params.risk_percent)
+#             target_price = self.entry_price * (1 + self.params.risk_percent)
+
+#             # Enter long
+#             self.buy()
+#             self.stop_loss = stop_loss
+#             self.target_price = target_price
+
+#         elif self.bearish_divergence and not self.position:
+#             self.entry_price = self.data.close[0]
+#             stop_loss = self.entry_price * (1 + self.params.risk_percent)
+#             target_price = self.entry_price * (1 - self.params.risk_percent)
+
+#             # Enter short
+#             self.sell()
+#             self.stop_loss = stop_loss
+#             self.target_price = target_price
+
+#         # Exit logic
+#         if self.position:
+#             # For a long position
+#             if self.position.size > 0:
+#                 if self.data.close[0] >= self.target_price or self.data.close[0] <= self.stop_loss:
+#                     self.close()
+#             # For a short position
+#             elif self.position.size < 0:
+#                 if self.data.close[0] <= self.target_price or self.data.close[0] >= self.stop_loss:
+#                     self.close()
+
+
+
+import backtrader as bt
+import math
+
 class PAUL_RSIStrategy(bt.Strategy):
-    """
-    PAUL_RSI Strategy:
-    Detects bullish and bearish divergences on RSI and trades accordingly.
-    """
     params = (
-        ('rsi_period', 14),
+        ('period', 14),
         ('overbought', 70),
         ('oversold', 30),
         ('target_rsi', 50),
-        ('risk_percent', 0.02),  # e.g., 2% risk management
+        ('stop_loss_pct', 0.02),   # example 2% stop loss
+        ('take_profit_pct', 0.05), # example 5% take profit
     )
 
     def __init__(self):
-        self.rsi = bt.indicators.RSI(self.data.close, period=self.params.rsi_period)
-        self.bullish_divergence = False
-        self.bearish_divergence = False
+        self.rsi = bt.indicators.RSI(self.data.close, period=self.params.period)
+
+        # Flags for whether a divergence-based trade was entered
+        self.bullish_divergence_detected = False
+        self.bearish_divergence_detected = False
         self.entry_price = None
 
-    def detect_divergence(self):
-        lows = self.data.low
-        highs = self.data.high
-        rsi = self.rsi
+        # We'll store recent highs and lows for divergence detection
+        self.price_highs = []
+        self.price_lows = []
+        self.rsi_highs = []
+        self.rsi_lows = []
 
-        # Detect Bullish Divergence: price lower lows, RSI higher highs
-        if lows[-1] < lows[-2] and rsi[-1] > rsi[-2]:
-            self.bullish_divergence = True
-            self.bearish_divergence = False
-
-        # Detect Bearish Divergence: price higher highs, RSI lower lows
-        elif highs[-1] > highs[-2] and rsi[-1] < rsi[-2]:
-            self.bullish_divergence = False
-            self.bearish_divergence = True
+        # Track last divergence type
+        self.last_divergence_type = None
 
     def next(self):
-        self.detect_divergence()
+        # Update lists of recent highs/lows (windowed approach)
+        # In a real scenario, you'd implement logic to detect swing points.
+        # Here, we just keep a rolling window and try to detect patterns.
+        window = 10  # look back over last 10 bars to detect divergence
+        self.price_highs = [self.data.high[-i] for i in range(1, window+1)]
+        self.price_lows = [self.data.low[-i] for i in range(1, window+1)]
+        self.rsi_highs = [self.rsi[-i] for i in range(1, window+1)]
+        self.rsi_lows = [self.rsi[-i] for i in range(1, window+1)]
 
-        # Entry logic
-        if self.bullish_divergence and not self.position:
-            self.entry_price = self.data.close[0]
-            stop_loss = self.entry_price * (1 - self.params.risk_percent)
-            target_price = self.entry_price * (1 + self.params.risk_percent)
+        current_rsi = self.rsi[0]
 
-            # Enter long
+        # Detect Divergence
+        divergence_status = self.detect_divergence()
+
+        # Entry Conditions
+        if divergence_status == "Bullish Divergence" and not self.position:
+            self.bullish_divergence_detected = True
+            self.bearish_divergence_detected = False
+            self.last_divergence_type = "bullish"
             self.buy()
-            self.stop_loss = stop_loss
-            self.target_price = target_price
-
-        elif self.bearish_divergence and not self.position:
             self.entry_price = self.data.close[0]
-            stop_loss = self.entry_price * (1 + self.params.risk_percent)
-            target_price = self.entry_price * (1 - self.params.risk_percent)
 
-            # Enter short
+        if divergence_status == "Bearish Divergence" and not self.position:
+            self.bearish_divergence_detected = True
+            self.bullish_divergence_detected = False
+            self.last_divergence_type = "bearish"
             self.sell()
-            self.stop_loss = stop_loss
-            self.target_price = target_price
+            self.entry_price = self.data.close[0]
 
-        # Exit logic
+        # Exit Conditions
         if self.position:
-            # For a long position
-            if self.position.size > 0:
-                if self.data.close[0] >= self.target_price or self.data.close[0] <= self.stop_loss:
-                    self.close()
-            # For a short position
-            elif self.position.size < 0:
-                if self.data.close[0] <= self.target_price or self.data.close[0] >= self.stop_loss:
-                    self.close()
+            # Check RSI target exit
+            if self.bullish_divergence_detected and current_rsi >= self.params.target_rsi:
+                self.close()
+                self.bullish_divergence_detected = False
+                self.entry_price = None
+
+            if self.bearish_divergence_detected and current_rsi <= self.params.target_rsi:
+                self.close()
+                self.bearish_divergence_detected = False
+                self.entry_price = None
+
+            # Stop Loss / Take Profit
+            if self.entry_price:
+                if self.position.size > 0: # Long
+                    if self.data.close[0] <= self.entry_price * (1.0 - self.params.stop_loss_pct):
+                        self.close()  # stop loss hit
+                    elif self.data.close[0] >= self.entry_price * (1.0 + self.params.take_profit_pct):
+                        self.close()  # take profit hit
+                else: # Short
+                    if self.data.close[0] >= self.entry_price * (1.0 + self.params.stop_loss_pct):
+                        self.close()  # stop loss hit
+                    elif self.data.close[0] <= self.entry_price * (1.0 - self.params.take_profit_pct):
+                        self.close()  # take profit hit
+
+    def detect_divergence(self):
+        # Simple Divergence Detection:
+        # Bullish divergence: price makes lower lows, RSI makes higher lows
+        # Bearish divergence: price makes higher highs, RSI makes lower highs
+
+        if len(self.price_lows) < 2 or len(self.rsi_lows) < 2 or len(self.price_highs) < 2 or len(self.rsi_highs) < 2:
+            return "No Divergence"
+
+        price_low1 = min(self.price_lows[:5])   # recent low
+        price_low2 = min(self.price_lows[5:])   # previous low
+        rsi_low1 = min(self.rsi_lows[:5])
+        rsi_low2 = min(self.rsi_lows[5:])
+
+        price_high1 = max(self.price_highs[:5]) # recent high
+        price_high2 = max(self.price_highs[5:]) # previous high
+        rsi_high1 = max(self.rsi_highs[:5])
+        rsi_high2 = max(self.rsi_highs[5:])
+
+        # Bullish divergence check
+        # Price making lower lows: price_low1 < price_low2
+        # RSI making higher lows: rsi_low1 > rsi_low2
+        if (price_low1 < price_low2) and (rsi_low1 > rsi_low2):
+            return "Bullish Divergence"
+
+        # Bearish divergence check
+        # Price making higher highs: price_high1 > price_high2
+        # RSI making lower highs: rsi_high1 < rsi_high2
+        if (price_high1 > price_high2) and (rsi_high1 < rsi_high2):
+            return "Bearish Divergence"
+
+        return "No Divergence"
+
 
 # File: components/backtesting_module/backtrader/strategy_adapters.py
 # Type: py
