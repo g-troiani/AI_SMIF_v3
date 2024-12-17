@@ -4822,6 +4822,66 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   </React.StrictMode>
 );
 
+// File: components/ui_module/frontend/src/hooks/usePortfolioData.ts
+// Type: ts
+
+import { useState, useEffect } from 'react';
+
+interface PortfolioData {
+  history: Array<{
+    date: string;
+    value: number;
+  }>;
+  currentBalance: number;
+  percentageChange: number;
+}
+
+export const usePortfolioData = (timeFilter: string) => {
+  const [data, setData] = useState<PortfolioData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const response = await fetch(`/api/portfolio/history?period=${timeFilter}`);
+        const result = await response.json();
+        
+        if (result.success && result.data) {
+          const validData = {
+            ...result.data,
+            history: result.data.history
+              .filter((point: any) => 
+                typeof point.value === 'number' && 
+                !isNaN(point.value) && 
+                point.value > 0
+              )
+              .map((point: any) => ({
+                date: point.date,
+                value: Number(point.value)
+              }))
+          };
+          setData(validData);
+          setError(null);
+        } else {
+          setError(result.message || 'Failed to fetch portfolio data');
+        }
+      } catch (error) {
+        setError('Error fetching portfolio data');
+        console.error('Error fetching data:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+    const interval = setInterval(fetchData, 60000);
+    return () => clearInterval(interval);
+  }, [timeFilter]);
+
+  return { data, loading, error };
+};
+
 // File: components/ui_module/frontend/src/components/BacktestConfigModal.tsx
 // Type: tsx
 
@@ -5640,6 +5700,38 @@ const RecentTrades: React.FC = () => {
 
 export default RecentTrades;
 
+// File: components/ui_module/frontend/src/components/dashboard/ChartToolTip.tsx
+// Type: tsx
+
+import React from 'react';
+import { formatCurrency, formatDate } from '../../utils/formatters';
+
+interface ChartTooltipProps {
+  active?: boolean;
+  payload?: Array<any>;
+  label?: string;
+  timeFilter: string;
+}
+
+const ChartTooltip: React.FC<ChartTooltipProps> = ({ active, payload, label, timeFilter }) => {
+  if (!active || !payload || !payload.length) {
+    return null;
+  }
+
+  return (
+    <div className="bg-white p-3 border rounded shadow-lg">
+      <p className="font-semibold text-gray-900">
+        {formatCurrency(payload[0].value)}
+      </p>
+      <p className="text-sm text-gray-500">
+        {formatDate(label, timeFilter === '1D')}
+      </p>
+    </div>
+  );
+};
+
+export default ChartTooltip;
+
 // File: components/ui_module/frontend/src/components/dashboard/DashboardChart copy.tsx
 // Type: tsx
 
@@ -5864,60 +5956,115 @@ export default DashboardChart;
 // File: components/ui_module/frontend/src/components/dashboard/DashboardChart.tsx
 // Type: tsx
 
-// src/components/dashboard/DashboardChart.tsx
-
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
-  LineChart,
-  Line,
+  ResponsiveContainer,
+  AreaChart,
+  Area,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
-  ResponsiveContainer
 } from 'recharts';
-
-interface PortfolioData {
-  date: string;  
-  value: number; 
-}
+import { formatCurrency, formatDate } from '../../utils/formatters';
 
 interface ChartData {
-  history: PortfolioData[];
+  history: Array<{
+    date: string;
+    value: number;
+  }>;
   currentBalance: number;
   percentageChange: number;
 }
 
+// Time filter type
+type TimeFilterOption = '1D' | '1W' | '1M' | '3M' | '1Y' | 'ALL';
+
+// Custom tooltip component
+const CustomTooltip = ({ active, payload, label, timeFilter }: any) => {
+  if (!active || !payload || !payload.length) return null;
+
+  return (
+    <div className="bg-white p-3 border rounded shadow-lg">
+      <p className="font-semibold text-gray-900">
+        {formatCurrency(payload[0].value)}
+      </p>
+      <p className="text-sm text-gray-500">
+        {formatDate(label, timeFilter === '1D')}
+      </p>
+    </div>
+  );
+};
+
+// Time filter component
+const TimeFilter = ({ selected, onChange }: { selected: TimeFilterOption; onChange: (filter: TimeFilterOption) => void }) => {
+  const options: TimeFilterOption[] = ['1D', '1W', '1M', '3M', '1Y', 'ALL'];
+
+  return (
+    <div className="flex space-x-2">
+      {options.map((period) => (
+        <button
+          key={period}
+          onClick={() => onChange(period)}
+          className={`px-3 py-1 text-sm rounded-full transition-colors ${
+            selected === period 
+              ? 'bg-green-600 text-white' 
+              : 'text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          {period}
+        </button>
+      ))}
+    </div>
+  );
+};
+
+// Portfolio summary component
+const PortfolioSummary = ({ balance, percentageChange }: { balance: number; percentageChange: number }) => {
+  return (
+    <div>
+      <p className="text-2xl font-semibold">{formatCurrency(balance)}</p>
+      <p className={`text-sm ${percentageChange >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+        {percentageChange >= 0 ? '+' : ''}{percentageChange.toFixed(2)}%
+      </p>
+    </div>
+  );
+};
+
 const DashboardChart: React.FC = () => {
-  const timeFilters: Array<'1D' | '1W' | '1M' | '3M' | '1Y' | 'ALL'> = ['1D', '1W', '1M', '3M', '1Y', 'ALL'];
-  const [timeFilter, setTimeFilter] = useState<'1D' | '1W' | '1M' | '3M' | '1Y' | 'ALL'>('1M');
+  const [timeFilter, setTimeFilter] = useState<TimeFilterOption>('1M');
   const [data, setData] = useState<ChartData | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  React.useEffect(() => {
     const fetchData = async () => {
-      setLoading(true);
-      setError(null);
       try {
         const response = await fetch(`/api/portfolio/history?period=${timeFilter}`);
         const result = await response.json();
-        if (result.success) {
-          const processedData: ChartData = {
-            history: result.data.history.map((item: any) => ({
-              date: item.date,
-              value: Number(item.value)
-            })),
-            currentBalance: Number(result.data.currentBalance),
-            percentageChange: Number(result.data.percentageChange)
+        
+        if (result.success && result.data) {
+          const validData = {
+            ...result.data,
+            history: result.data.history
+              .filter((point: any) => 
+                typeof point.value === 'number' && 
+                !isNaN(point.value) && 
+                point.value > 0
+              )
+              .map((point: any) => ({
+                date: point.date,
+                value: Number(point.value)
+              }))
           };
-          setData(processedData);
+          setData(validData);
+          setError(null);
         } else {
-          setError('Failed to fetch data.');
+          setError(result.message || 'Failed to fetch portfolio data');
         }
-      } catch (err) {
-        console.error('Error fetching data:', err);
-        setError('An error occurred while fetching data.');
+      } catch (error) {
+        setError('Error fetching portfolio data');
+        console.error('Error fetching data:', error);
       } finally {
         setLoading(false);
       }
@@ -5928,93 +6075,78 @@ const DashboardChart: React.FC = () => {
     return () => clearInterval(interval);
   }, [timeFilter]);
 
-  const formatCurrency = (value: number): string => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2
-    }).format(value);
-  };
-
   if (loading) {
-    return <div className="text-center">Loading...</div>;
+    return <div className="h-64 flex items-center justify-center">Loading...</div>;
   }
 
   if (error) {
-    return <div className="text-center text-red-500">{error}</div>;
+    return <div className="h-64 flex items-center justify-center text-red-500">{error}</div>;
   }
 
   if (!data || !data.history.length) {
-    return <div className="text-center">No data available.</div>;
+    return <div className="h-64 flex items-center justify-center">No data available</div>;
   }
 
   return (
-    <div>
+    <div className="p-6">
+      <h3 className="text-lg font-medium leading-6 text-gray-900">Portfolio Performance</h3>
+      
       <div className="mt-2">
-        <p className="text-2xl font-semibold">{formatCurrency(data.currentBalance)}</p>
-        <p className={`text-sm ${data.percentageChange >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-          {data.percentageChange >= 0 ? '+' : ''}
-          {data.percentageChange.toFixed(2)}%
-        </p>
+        <PortfolioSummary 
+          balance={data.currentBalance}
+          percentageChange={data.percentageChange}
+        />
       </div>
 
-      <div className="flex space-x-2 mt-4">
-        {timeFilters.map((period) => (
-          <button
-            key={period}
-            onClick={() => setTimeFilter(period)}
-            className={`px-3 py-1 text-sm rounded-full transition-colors ${
-              timeFilter === period
-                ? 'bg-green-600 text-white'
-                : 'text-gray-600 hover:bg-gray-100'
-            }`}
-          >
-            {period}
-          </button>
-        ))}
+      <div className="mt-4">
+        <TimeFilter 
+          selected={timeFilter}
+          onChange={setTimeFilter}
+        />
       </div>
 
-      <div className="h-64 mt-4 flex justify-center items-center">
+      <div className="mt-4" style={{ height: '400px' }}>
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart
+          <AreaChart
             data={data.history}
-            margin={{
-              top: 20,
-              right: 30,
-              left: 20,
-              bottom: 5,
-            }}
+            margin={{ top: 10, right: 30, left: 10, bottom: 0 }}
           >
-            <CartesianGrid strokeDasharray="3 3" />
+            <defs>
+              <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#22c55e" stopOpacity={0.2}/>
+                <stop offset="95%" stopColor="#22c55e" stopOpacity={0}/>
+              </linearGradient>
+            </defs>
+            <CartesianGrid 
+              strokeDasharray="3 3" 
+              vertical={false}
+              stroke="#E5E7EB"
+            />
             <XAxis
               dataKey="date"
-              tickFormatter={(dateStr: string) => {
-                const date = new Date(dateStr);
-                return `${date.getMonth() + 1}/${date.getDate()}`;
-              }}
-              stroke="#4B5563"
+              tickFormatter={(date) => formatDate(date, timeFilter === '1D')}
+              tick={{ fill: '#6B7280', fontSize: 12 }}
+              axisLine={{ stroke: '#E5E7EB' }}
+              tickLine={{ stroke: '#E5E7EB' }}
             />
             <YAxis
+              tickFormatter={formatCurrency}
+              tick={{ fill: '#6B7280', fontSize: 12 }}
+              axisLine={{ stroke: '#E5E7EB' }}
+              tickLine={{ stroke: '#E5E7EB' }}
+              width={80}
               domain={['dataMin', 'dataMax']}
-              tickFormatter={(value: number) => formatCurrency(value)}
-              stroke="#4B5563"
             />
-            <Tooltip
-              formatter={(value: number) => formatCurrency(value)}
-              labelFormatter={(label: string) => {
-                const date = new Date(label);
-                return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
-              }}
-            />
-            <Line
+            <Tooltip content={<CustomTooltip timeFilter={timeFilter} />} />
+            <Area
               type="monotone"
               dataKey="value"
-              stroke={data.percentageChange >= 0 ? "#16a34a" : "#dc2626"}
-              dot={false}
-              isAnimationActive={false}
+              stroke="#22c55e"
+              fillOpacity={1}
+              fill="url(#colorValue)"
+              strokeWidth={2}
             />
-          </LineChart>
+          </AreaChart>
         </ResponsiveContainer>
       </div>
     </div>
@@ -6022,7 +6154,6 @@ const DashboardChart: React.FC = () => {
 };
 
 export default DashboardChart;
-
 
 // File: components/ui_module/frontend/src/components/dashboard/DashboardMetrics.tsx
 // Type: tsx
@@ -6277,114 +6408,155 @@ export default MarketOverview;
 // File: components/ui_module/frontend/src/components/dashboard/PortfolioChart.tsx
 // Type: tsx
 
-import React, { useState, useEffect } from 'react';
+import React from 'react';
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+} from 'recharts';
+import { formatCurrency, formatDate } from '../../utils/formatters';
+import ChartTooltip from './ChartTooltip';
 
-interface ChartData {
-  history: Array<{
-    date: string;
-    value: number;
-  }>;
-  currentBalance: number;
-  percentageChange: number;
+interface PortfolioChartProps {
+  data: Array<{ date: string; value: number }>;
+  timeFilter: string;
 }
 
-const DashboardChart: React.FC = () => {
-  const [timeFilter, setTimeFilter] = useState<'1D' | '1W' | '1M' | '3M' | '1Y' | 'ALL'>('1M');
-  const [data, setData] = useState<ChartData | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const response = await fetch(`/api/portfolio/history?period=${timeFilter}`);
-        const result = await response.json();
-        if (result.success) {
-          setData(result.data);
-        }
-      } catch (error) {
-        console.error('Error fetching data:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchData();
-    const interval = setInterval(fetchData, 60000);
-    return () => clearInterval(interval);
-  }, [timeFilter]);
-
-  if (loading || !data) {
-    return <div className="h-64 flex items-center justify-center">Loading...</div>;
-  }
-
-  // Calculate percentages for heights
-  const minValue = Math.min(...data.history.map(d => d.value));
-  const maxValue = Math.max(...data.history.map(d => d.value));
-  const valueRange = maxValue - minValue;
-
-  const getHeight = (value: number) => {
-    return ((value - minValue) / valueRange) * 100;
-  };
-
+const PortfolioChart: React.FC<PortfolioChartProps> = ({ data, timeFilter }) => {
   return (
-    <div className="p-6">
-      <h3 className="text-lg font-medium leading-6 text-gray-900">Portfolio Performance</h3>
-      
-      <div className="mt-2">
-        <p className="text-2xl font-semibold">${data.currentBalance.toFixed(2)}</p>
-        <p className={`text-sm ${data.percentageChange >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-          {data.percentageChange >= 0 ? '+' : ''}{data.percentageChange.toFixed(2)}%
-        </p>
-      </div>
-
-      <div className="flex space-x-2 mt-4">
-        {['1D', '1W', '1M', '3M', '1Y', 'ALL'].map((period) => (
-          <button
-            key={period}
-            onClick={() => setTimeFilter(period as typeof timeFilter)}
-            className={`px-3 py-1 text-sm rounded-full transition-colors ${
-              timeFilter === period 
-                ? 'bg-green-600 text-white' 
-                : 'text-gray-600 hover:bg-gray-100'
-            }`}
-          >
-            {period}
-          </button>
-        ))}
-      </div>
-
-      {/* Chart Container */}
-      <div className="mt-4 h-64 relative">
-        {/* Step bars */}
-        <div className="flex h-full">
-          {data.history.map((point, index) => (
-            <div 
-              key={index} 
-              className="flex-1 bg-transparent hover:bg-gray-100 group relative"
-              style={{ height: '100%' }}
-            >
-              {/* The actual bar */}
-              <div 
-                className="absolute bottom-0 w-full bg-blue-500"
-                style={{ height: `${getHeight(point.value)}%` }}
-              />
-              
-              {/* Tooltip */}
-              <div className="hidden group-hover:block absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 p-2 bg-white rounded shadow-lg z-10 whitespace-nowrap">
-                <p className="font-semibold">${point.value.toFixed(2)}</p>
-                <p className="text-sm text-gray-500">
-                  {new Date(point.date).toLocaleString()}
-                </p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+    <div style={{ height: '400px' }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <AreaChart
+          data={data}
+          margin={{ top: 10, right: 30, left: 10, bottom: 0 }}
+        >
+          <defs>
+            <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor="#22c55e" stopOpacity={0.2}/>
+              <stop offset="95%" stopColor="#22c55e" stopOpacity={0}/>
+            </linearGradient>
+          </defs>
+          <CartesianGrid 
+            strokeDasharray="3 3" 
+            vertical={false}
+            stroke="#E5E7EB"
+          />
+          <XAxis
+            dataKey="date"
+            tickFormatter={(date) => formatDate(date, timeFilter === '1D')}
+            tick={{ fill: '#6B7280', fontSize: 12 }}
+            axisLine={{ stroke: '#E5E7EB' }}
+            tickLine={{ stroke: '#E5E7EB' }}
+          />
+          <YAxis
+            tickFormatter={formatCurrency}
+            tick={{ fill: '#6B7280', fontSize: 12 }}
+            axisLine={{ stroke: '#E5E7EB' }}
+            tickLine={{ stroke: '#E5E7EB' }}
+            width={80}
+          />
+          <Tooltip content={<ChartTooltip timeFilter={timeFilter} />} />
+          <Area
+            type="monotone"
+            dataKey="value"
+            stroke="#22c55e"
+            fillOpacity={1}
+            fill="url(#colorValue)"
+            strokeWidth={2}
+          />
+        </AreaChart>
+      </ResponsiveContainer>
     </div>
   );
 };
 
-export default DashboardChart;
+export default PortfolioChart;
+
+// File: components/ui_module/frontend/src/components/dashboard/PortfolioSummary.tsx
+// Type: tsx
+
+import React from 'react';
+import { formatCurrency } from '../../utils/formatters';
+
+interface PortfolioSummaryProps {
+  balance: number;
+  percentageChange: number;
+}
+
+const PortfolioSummary: React.FC<PortfolioSummaryProps> = ({ balance, percentageChange }) => {
+  return (
+    <div>
+      <p className="text-2xl font-semibold">{formatCurrency(balance)}</p>
+      <p className={`text-sm ${percentageChange >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+        {percentageChange >= 0 ? '+' : ''}{percentageChange.toFixed(2)}%
+      </p>
+    </div>
+  );
+};
+
+export default PortfolioSummary;
+
+// File: components/ui_module/frontend/src/components/dashboard/TimeFilter.tsx
+// Type: tsx
+
+import React from 'react';
+
+type TimeFilterOption = '1D' | '1W' | '1M' | '3M' | '1Y' | 'ALL';
+
+interface TimeFilterProps {
+  selected: TimeFilterOption;
+  onChange: (filter: TimeFilterOption) => void;
+}
+
+const TimeFilter: React.FC<TimeFilterProps> = ({ selected, onChange }) => {
+  const options: TimeFilterOption[] = ['1D', '1W', '1M', '3M', '1Y', 'ALL'];
+
+  return (
+    <div className="flex space-x-2">
+      {options.map((period) => (
+        <button
+          key={period}
+          onClick={() => onChange(period)}
+          className={`px-3 py-1 text-sm rounded-full transition-colors ${
+            selected === period 
+              ? 'bg-green-600 text-white' 
+              : 'text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          {period}
+        </button>
+      ))}
+    </div>
+  );
+};
+
+export default TimeFilter;
+
+// File: components/ui_module/frontend/src/utils/formatters.ts
+// Type: ts
+
+export const formatCurrency = (value: number): string => {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).format(value);
+  };
+  
+  export const formatDate = (dateString: string, includeTime: boolean = false): string => {
+    const date = new Date(dateString);
+    return new Intl.DateTimeFormat('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: includeTime ? 'numeric' : undefined,
+      minute: includeTime ? 'numeric' : undefined,
+    }).format(date);
+  };
 
 // File: components/ui_module/frontend/src/pages/Backtest.tsx
 // Type: tsx
@@ -7464,169 +7636,170 @@ def get_dashboard_data():
 
      
 
+from flask import Flask, jsonify
+from flask_cors import CORS
 import os
+import logging
 import requests
-import traceback
-from flask import jsonify
-from datetime import datetime, timedelta
+from datetime import datetime
+import pytz
+from typing import Dict, List, Optional, Union
 
-@app.route('/api/market-overview', methods=['GET'])
-def market_overview():
-    """Fetch current price and % change from the first 5-minute bar of the day for both stocks and BTC."""
-    try:
-        symbols = {
-            'SPY': "S&P 500",
-            'QQQ': "NASDAQ",
-            'IWV': "Russell 3000",
-            'GLD': "Gold",
-            'VXX': "VIX",
-            'EWJ': "Japan (XJPX Proxy)",
-            'EWU': "UK (XLON Proxy)",
-            'BTC/USD': "Bitcoin"
-        }
+# # Configure logging
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+# )
+# logger = logging.getLogger(__name__)
 
-        base_url = "https://data.alpaca.markets"
-        headers = {
+# app = Flask(__name__)
+# CORS(app)
+
+# Market symbols configuration
+MARKET_SYMBOLS = {
+    'SPY': "S&P 500",
+    'QQQ': "NASDAQ",
+    'IWV': "Russell 3000",
+    'GLD': "Gold",
+    'VXX': "VIX",
+    'EWJ': "Japan (XJPX Proxy)",
+    'EWU': "UK (XLON Proxy)",
+    'BTC/USD': "Bitcoin"
+}
+
+class MarketData:
+    def __init__(self):
+        self.base_url = "https://data.alpaca.markets"
+        self.headers = {
             "APCA-API-KEY-ID": os.getenv('APCA_API_KEY_ID', ''),
             "APCA-API-SECRET-KEY": os.getenv('APCA_API_SECRET_KEY', ''),
             "accept": "application/json"
         }
 
-        stock_symbols = [s for s in symbols if s != 'BTC/USD']
-        market_data = []
-
-        # Define times for the first 5-min bar of the trading day for stocks
-        # Assuming market open at 09:30 ET (13:30 UTC), we'll capture the bar that starts at 09:30.
-        today = datetime.utcnow().date().isoformat()
-        stock_start_time = f"{today}T09:30:00-04:00"
-        stock_end_time = f"{today}T09:40:00-04:00"
-        stock_params = {
-            "timeframe": "5Min",
-            "start": stock_start_time,
-            "end": stock_end_time,
-            "limit": 1,
-            "feed": "sip"
-        }
-
-        # For BTC, since crypto runs 24/7, let's consider midnight UTC as the "start of the day".
-        btc_start_time = f"{today}T00:00:00Z"
-        btc_end_time = f"{today}T00:10:00Z"
-        btc_params = {
-            "symbols": "BTC/USD",
-            "timeframe": "5Min",
-            "start": btc_start_time,
-            "end": btc_end_time,
-            "limit": 1
-        }
-
-        def get_latest_stock_close(symbol):
-            # Latest stock close from latest bar endpoint
-            url = f"{base_url}/v2/stocks/{symbol}/bars/latest?feed=sip"
-            r = requests.get(url, headers=headers)
-            r.raise_for_status()
-            data = r.json()
-            bar = data.get("bar", {})
-            return bar.get('c', None)
-
-        def get_first_stock_bar_close(symbol):
-            # First 5-min bar close of the trading day for stock
-            url = f"{base_url}/v2/stocks/{symbol}/bars"
-            r = requests.get(url, headers=headers, params=stock_params)
-            r.raise_for_status()
-            data = r.json()
-            bars = data.get("bars", [])
-            if bars:
-                return bars[0].get('c', None)
-            return None
-
-        def get_btc_current_price():
-            # Current BTC price from snapshot
-            crypto_url = f"{base_url}/v1beta3/crypto/us/snapshots?symbols=BTC/USD"
-            cr = requests.get(crypto_url, headers=headers)
-            cr.raise_for_status()
-            crypto_snap = cr.json().get('snapshots', {}).get('BTC/USD', {})
-            latest_trade = crypto_snap.get('latestTrade', {})
-            daily_bar = crypto_snap.get('dailyBar', {})
-
-            if 'p' in latest_trade and latest_trade['p'] > 0:
-                return latest_trade['p']
-            elif 'c' in daily_bar and daily_bar['c'] > 0:
-                return daily_bar['c']
-            return None
-
-        def get_btc_first_bar_close():
-            # First 5-min bar after midnight UTC for BTC
-            crypto_bars_url = f"{base_url}/v1beta3/crypto/us/bars"
-            r = requests.get(crypto_bars_url, headers=headers, params=btc_params)
-            r.raise_for_status()
-            data = r.json()
-            bars = data.get("bars", {}).get("BTC/USD", [])
-            if bars:
-                return bars[0].get('c', None)
-            return None
-
-        # Compute data for stock symbols
-        for sym in stock_symbols:
-            try:
-                latest_close = get_latest_stock_close(sym)
-                first_close = get_first_stock_bar_close(sym)
-                if latest_close is None or first_close is None:
-                    continue
-
-                change_percent = ((latest_close - first_close) / first_close) * 100
-                market_data.append({
-                    'symbol': sym,
-                    'name': symbols[sym],
-                    'price': latest_close,
-                    'change': change_percent
-                })
-            except requests.exceptions.RequestException as e:
-                print(f"Error fetching data for {sym}: {e}")
-                continue
-            except Exception as e:
-                print(f"General error for {sym}: {e}")
-                continue
-
-        # Compute data for BTC
+    def get_stock_data(self, symbol: str) -> Optional[Dict]:
+        """Get current price and previous close for a stock."""
         try:
-            btc_current_price = get_btc_current_price()
-            btc_first_close = get_btc_first_bar_close()
-            formatted_btc_price = "{:,.2f}".format(btc_current_price) if btc_current_price is not None else "N/A"
-            btc_change = 0.0
-            if btc_current_price is not None and btc_first_close is not None and btc_first_close > 0:
-                btc_change = ((btc_current_price - btc_first_close) / btc_first_close) * 100
+            # Get latest price from snapshot
+            snapshot_resp = requests.get(
+                f"{self.base_url}/v2/stocks/{symbol}/snapshot",
+                headers=self.headers,
+                params={"feed": "sip"}
+            )
+            snapshot_resp.raise_for_status()
+            snapshot_data = snapshot_resp.json()
+            current_price = snapshot_data.get('latestTrade', {}).get('p')
+            prev_close = snapshot_data.get('prevDailyBar', {}).get('c')
 
-            market_data.append({
-                'symbol': 'BTC/USD',
-                'name': symbols['BTC/USD'],
-                'price': formatted_btc_price,
-                'change': btc_change
-            })
+            return {
+                'current_price': current_price,
+                'prev_close': prev_close
+            }
         except Exception as e:
-            print(f"Error fetching BTC data: {e}")
-            # If error, still return at least what we have
-            market_data.append({
-                'symbol': 'BTC/USD',
-                'name': symbols['BTC/USD'],
-                'price': "N/A",
-                'change': 0.0
-            })
+            logger.error(f"Error fetching stock data for {symbol}: {e}")
+            return None
 
+    def get_crypto_data(self, symbol: str) -> Optional[Dict]:
+        """Get current price and previous close for crypto."""
+        try:
+            # Get latest trade
+            trade_resp = requests.get(
+                f"{self.base_url}/v1beta3/crypto/us/latest/trades",
+                headers=self.headers,
+                params={"symbols": symbol}
+            )
+            trade_resp.raise_for_status()
+            current_price = trade_resp.json().get('trades', {}).get(symbol, {}).get('p')
+
+            # Get previous day's close
+            bars_resp = requests.get(
+                f"{self.base_url}/v1beta3/crypto/us/bars",
+                headers=self.headers,
+                params={
+                    "symbols": symbol,
+                    "timeframe": "1Day",
+                    "limit": 2
+                }
+            )
+            bars_resp.raise_for_status()
+            bars = bars_resp.json().get('bars', {}).get(symbol, [])
+            prev_close = bars[0].get('c') if bars else None
+
+            return {
+                'current_price': current_price,
+                'prev_close': prev_close
+            }
+        except Exception as e:
+            logger.error(f"Error fetching crypto data for {symbol}: {e}")
+            return None
+
+    @staticmethod
+    def calculate_change(current: float, previous: float) -> float:
+        """Calculate percentage change between two values."""
+        if not (current and previous and previous != 0):
+            return 0.0
+        return ((current - previous) / previous) * 100
+
+@app.route('/api/market-overview', methods=['GET'])
+def market_overview():
+    """Get market overview data for all tracked symbols."""
+    try:
+        market_data = []
+        market_service = MarketData()
+
+        for symbol, name in MARKET_SYMBOLS.items():
+            try:
+                # Get price data based on symbol type
+                if symbol == 'BTC/USD':
+                    data = market_service.get_crypto_data(symbol)
+                else:
+                    data = market_service.get_stock_data(symbol)
+
+                if data and data['current_price']:
+                    # Calculate change and format price
+                    change = market_service.calculate_change(
+                        data['current_price'], 
+                        data['prev_close']
+                    )
+                    
+                    market_data.append({
+                        'symbol': symbol,
+                        'name': name,
+                        'price': f"{data['current_price']:,.2f}",
+                        'change': round(change, 2)
+                    })
+                else:
+                    # Add placeholder data if fetch failed
+                    market_data.append({
+                        'symbol': symbol,
+                        'name': name,
+                        'price': 'N/A',
+                        'change': 0.0
+                    })
+
+            except Exception as e:
+                logger.error(f"Error processing {symbol}: {e}")
+                # Maintain symbol visibility even on error
+                market_data.append({
+                    'symbol': symbol,
+                    'name': name,
+                    'price': 'N/A',
+                    'change': 0.0
+                })
+
+        # Sort market data by symbol
+        market_data.sort(key=lambda x: x['symbol'])
+        
         return jsonify({
             'success': True,
             'data': market_data
         })
 
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching market overview: {e}")
-        print(traceback.format_exc())
-        return jsonify({'success': False, 'message': str(e)}), 500
     except Exception as e:
-        print(f"Error fetching market overview: {e}")
-        print(traceback.format_exc())
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-
+        logger.error(f"General error in market overview: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
 
 
 

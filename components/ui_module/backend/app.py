@@ -780,6 +780,76 @@ def run_backtest():
 
 
 
+@app.route('/api/backtests', methods=['GET'])
+def get_all_backtests():
+    import sqlite3, json
+    conn = sqlite3.connect('data/backtesting_results.db')
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT
+            id,
+            strategy_name,
+            strategy_params,
+            ticker,
+            start_date,
+            end_date,
+            final_value,
+            total_pl,
+            total_pct_change,
+            cagr,
+            total_return,
+            std_dev,
+            annual_vol,
+            sharpe_ratio,
+            sortino_ratio,
+            max_drawdown,
+            win_rate,
+            alpha,
+            num_trades,
+            information_ratio,
+            strategy_unique_id,
+            timestamp
+        FROM backtest_summary
+        ORDER BY timestamp DESC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+
+    results = []
+    for row in rows:
+        strategy_params = json.loads(row[2]) if row[2] else {}
+        result = {
+            'id': row[0],
+            'strategy_name': row[1],
+            'strategy_params': strategy_params,
+            'ticker': row[3],
+            'start_date': row[4],
+            'end_date': row[5],
+            'final_value': row[6],
+            'total_pl': row[7],
+            'total_return_pct': row[8],  # Changed from 'total_pct_change' to 'total_return_pct'
+            'cagr': row[9],
+            'total_return': row[10],
+            'std_dev': row[11],
+            'annual_vol': row[12],
+            'sharpe_ratio': row[13],
+            'sortino_ratio': row[14],
+            'max_drawdown': row[15],
+            'win_rate': row[16],
+            'alpha': row[17],
+            'num_trades': row[18],
+            'information_ratio': row[19],
+            'strategy_unique_id': row[20],
+            'timestamp': row[21]
+        }
+        results.append(result)
+    return jsonify({'success': True, 'results': results})
+
+
+
+
+
+
 
 if __name__ == '__main__':
     initialize_app()
