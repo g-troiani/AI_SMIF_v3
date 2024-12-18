@@ -37,25 +37,16 @@ logging.basicConfig(
 )
 logging.debug(f"Determined project_root as: {project_root}")
 
-data_plots_dir = os.path.join(project_root, 'data', 'plots')
-data_static_plots_dir = os.path.join(project_root, 'data', 'static', 'plots')
 
-logging.debug(f"Data plots directory: {data_plots_dir}")
-logging.debug(f"Data static plots directory: {data_static_plots_dir}")
+plots_dir = os.path.join(project_root, 'plots')
+logging.debug(f"Data plots directory: {plots_dir}")
 
-if not os.path.exists(data_plots_dir):
+if not os.path.exists(plots_dir):
     try:
-        os.makedirs(data_plots_dir)
-        logging.debug(f"Created directory {data_plots_dir}")
+        os.makedirs(plots_dir)
+        logging.debug(f"Created directory {plots_dir}")
     except Exception as e:
-        logging.error(f"Error creating {data_plots_dir}: {e}")
-
-if not os.path.exists(data_static_plots_dir):
-    try:
-        os.makedirs(data_static_plots_dir)
-        logging.debug(f"Created directory {data_static_plots_dir}")
-    except Exception as e:
-        logging.error(f"Error creating {data_static_plots_dir}: {e}")
+        logging.error(f"Error creating {plots_dir}: {e}")
 
 
 class AllInSizer(bt.Sizer):
@@ -288,16 +279,8 @@ class Backtester:
             fig.suptitle(f"Backtest Result - {self.strategy_name} on {self.ticker}", fontsize=16, fontweight='bold')
 
             try:
-                temp_plot_filename = os.path.join(
-                    data_plots_dir,
-                    f"backtest_plot_{self.strategy_name}_{self.ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-                )
-                logging.debug(f"Saving temporary plot to {temp_plot_filename}")
-                fig.savefig(temp_plot_filename, dpi=300, bbox_inches='tight')
-                logging.debug("Temporary plot saved successfully.")
-
                 final_plot_filename = os.path.join(
-                    data_static_plots_dir,
+                    plots_dir,
                     f"backtest_plot_{self.strategy_name}_{self.ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
                 )
                 logging.debug(f"Saving final plot to {final_plot_filename}")
@@ -306,7 +289,11 @@ class Backtester:
 
                 plt.close(fig)
                 self.plot_filename = final_plot_filename
-                logging.debug(f"Plot filename stored as {self.plot_filename}")
+
+                # Set the plot_url that the UI can use to access the image.
+                # Assuming your Flask app is configured to serve files under /plots/
+                self.plot_url = f"/plots/{os.path.basename(final_plot_filename)}"
+                logging.debug(f"Plot URL set to {self.plot_url}")
 
             except Exception as e:
                 logging.error(f"Error saving plot files: {e}", exc_info=True)
@@ -523,6 +510,7 @@ class Backtester:
                 conn.commit()
             else:
                 logging.warning("No backtest record found to associate the plot with.")
+
 
     def run_benchmark(self, benchmark_ticker, cash=100000.0, commission=0.0):
         conn = sqlite3.connect(self.db_path)
