@@ -24,7 +24,7 @@ class DataConfig:
         # Default settings
         self.config['DEFAULT'] = {
             'database_path': str(self.data_dir / 'market_data.db'),
-            'tickers_file': str(self.project_root / 'tickers.csv'),
+            'tickers_file': str(self.data_dir / 'tickers.csv'),
             'log_file': str(self.log_dir / 'data_manager.log'),
             'historical_data_years': '5',
             'data_frequency_minutes': '5',

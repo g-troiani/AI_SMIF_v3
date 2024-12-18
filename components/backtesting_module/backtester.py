@@ -1,3 +1,6 @@
+# File: components/backtesting_module/backtester.py
+# Type: py
+
 import backtrader as bt
 import pandas as pd
 import sqlite3
@@ -17,12 +20,43 @@ matplotlib.use('Agg')  # Use Agg backend for environments without a display
 import matplotlib.pyplot as plt
 plt.rcParams['figure.figsize'] = (12, 6)
 plt.style.use('ggplot')  # a nice built-in style if you want a pretty look
+from utils.find_project_root import find_project_root
 
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = find_project_root(current_dir, target_folder_name='ai_smif_v3')# print(f"current_dir resolved to: {current_dir}")  
+# print(f"project_root resolved to: {project_root}")  
+logging.debug(f"Resolved project_root: {project_root}")
+
+
+# Set logging level to DEBUG for detailed tracing
 logging.basicConfig(
     filename='logs/backtesting.log',
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s %(levelname)s:%(message)s'
 )
+logging.debug(f"Determined project_root as: {project_root}")
+
+data_plots_dir = os.path.join(project_root, 'data', 'plots')
+data_static_plots_dir = os.path.join(project_root, 'data', 'static', 'plots')
+
+logging.debug(f"Data plots directory: {data_plots_dir}")
+logging.debug(f"Data static plots directory: {data_static_plots_dir}")
+
+if not os.path.exists(data_plots_dir):
+    try:
+        os.makedirs(data_plots_dir)
+        logging.debug(f"Created directory {data_plots_dir}")
+    except Exception as e:
+        logging.error(f"Error creating {data_plots_dir}: {e}")
+
+if not os.path.exists(data_static_plots_dir):
+    try:
+        os.makedirs(data_static_plots_dir)
+        logging.debug(f"Created directory {data_static_plots_dir}")
+    except Exception as e:
+        logging.error(f"Error creating {data_static_plots_dir}: {e}")
+
 
 class AllInSizer(bt.Sizer):
     """
@@ -51,12 +85,13 @@ class PercentageInvestedObserver(bt.Observer):
         current_date = self.datas[0].datetime.datetime(0)
         print(f"Date: {current_date}, Percent Invested: {invested_percent:.2f}%")
 
+
 class Backtester:
     """
     Runs backtests using historical data and strategies from a local SQLite database.
     """
 
-    def __init__(self, strategy_name, strategy_params, ticker, start_date=None, end_date=None, db_path='data/market_data.db', percent_invest=100,
+    def __init__(self, strategy_name, strategy_params, ticker, start_date=None, end_date=None, db_path=os.path.join(project_root, 'data', 'market_data.db'), percent_invest=100,
                  stop_loss=0.0, take_profit=0.0):
         self.strategy_name = strategy_name
         self.strategy_params = strategy_params
@@ -72,7 +107,6 @@ class Backtester:
         self.take_profit = take_profit
 
         self._set_default_dates_if_needed()
-
 
     def _set_default_dates_if_needed(self):
         conn = sqlite3.connect(self.db_path)
@@ -131,9 +165,13 @@ class Backtester:
         print(f"Total bars: {len(self.data)}")
 
     def run_backtest(self, cash=100000.0, commission=0.0):
+        logging.debug("Starting run_backtest method...")
         try:
             self.load_data()
+            logging.debug("Data loaded successfully. Validating data...")
             validate_backtest_data(self.data)
+            logging.debug("Data validation passed. Setting up cerebro...")
+
             cerebro = bt.Cerebro()
 
             data_feed = bt.feeds.PandasData(
@@ -143,11 +181,10 @@ class Backtester:
             )
             cerebro.adddata(data_feed)
 
-            # Add strategy with stop_loss and take_profit as params
             strategy_class = StrategyAdapter.get_strategy(self.strategy_name)
-            cerebro.addstrategy(strategy_class, 
-                                stop_loss=self.stop_loss, 
-                                take_profit=self.take_profit, 
+            cerebro.addstrategy(strategy_class,
+                                stop_loss=self.stop_loss,
+                                take_profit=self.take_profit,
                                 **self.strategy_params
                                 )
 
@@ -165,11 +202,13 @@ class Backtester:
             cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='timereturn')
             cerebro.addanalyzer(bt.analyzers.SQN, _name='sqn')
 
-            # Run backtest
+            logging.debug("Running cerebro...")
             self.results = cerebro.run()
             self.final_value = cerebro.broker.getvalue()
+            logging.debug(f"Cerebro run completed. Final portfolio value: {self.final_value}")
 
             # Extract analyzer results
+            logging.debug("Extracting analyzer results...")
             analyzer = self.results[0].analyzers
             returns_analysis = analyzer.returns.get_analysis()
             sharpe_analysis = analyzer.sharpe.get_analysis()
@@ -179,8 +218,7 @@ class Backtester:
             time_return_analysis = analyzer.timereturn.get_analysis()
             sqn_analysis = analyzer.sqn.get_analysis()
 
-            # Compute additional metrics
-            total_return = returns_analysis['rtot']          # cumulative return (decimal)
+            total_return = returns_analysis['rtot']
             total_pct_change = total_return * 100.0
             initial_cash = cash
             total_pl = self.final_value - initial_cash
@@ -207,7 +245,7 @@ class Backtester:
 
             benchmark_ticker = BacktestConfig.BENCHMARK_TICKER
             benchmark_metrics = self.run_benchmark(benchmark_ticker, cash=cash, commission=commission)
-            benchmark_return = benchmark_metrics['Total Return'] # decimal form
+            benchmark_return = benchmark_metrics['Total Return']
 
             alpha = (total_return - benchmark_return) * 100.0
 
@@ -220,7 +258,7 @@ class Backtester:
             sharpe_ratio = sharpe_analysis.get('sharperatio', None)
             max_drawdown = drawdown_analysis['max']['drawdown']
 
-            # Save results to new database
+            logging.debug("Saving results to DB...")
             self.save_results_to_db(
                 strategy_name=self.strategy_name,
                 strategy_params=self.strategy_params,
@@ -242,41 +280,47 @@ class Backtester:
                 num_trades=total_trades,
                 information_ratio=information_ratio
             )
+            logging.debug("Results saved to DB successfully.")
 
-            # Ensure plots directory exists
-            if not os.path.exists('plots'):
-                os.makedirs('plots')
-            plot_filename = f"plots/backtest_plot_{self.strategy_name}_{self.ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-
-            # Make the plot prettier
-            # Set a nicer style
+            logging.debug("Attempting to plot results...")
             figs = cerebro.plot(style='candle', barup='green', bardown='red', volume=False, show=False)
             fig = figs[0][0]
-
-            # Customize figure
             fig.suptitle(f"Backtest Result - {self.strategy_name} on {self.ticker}", fontsize=16, fontweight='bold')
-            fig.savefig(plot_filename, dpi=300, bbox_inches='tight')
-            plt.close(fig)
 
-            # Save plot to static/plots directory
-            plot_filename = f"static/plots/backtest_plot_{self.strategy_name}_{self.ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-            fig.savefig(plot_filename, dpi=300, bbox_inches='tight')
-            self.plot_filename = plot_filename
-            # self.save_plot_filename(plot_filename)
+            try:
+                temp_plot_filename = os.path.join(
+                    data_plots_dir,
+                    f"backtest_plot_{self.strategy_name}_{self.ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                )
+                logging.debug(f"Saving temporary plot to {temp_plot_filename}")
+                fig.savefig(temp_plot_filename, dpi=300, bbox_inches='tight')
+                logging.debug("Temporary plot saved successfully.")
+
+                final_plot_filename = os.path.join(
+                    data_static_plots_dir,
+                    f"backtest_plot_{self.strategy_name}_{self.ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                )
+                logging.debug(f"Saving final plot to {final_plot_filename}")
+                fig.savefig(final_plot_filename, dpi=300, bbox_inches='tight')
+                logging.debug("Final plot saved successfully.")
+
+                plt.close(fig)
+                self.plot_filename = final_plot_filename
+                logging.debug(f"Plot filename stored as {self.plot_filename}")
+
+            except Exception as e:
+                logging.error(f"Error saving plot files: {e}", exc_info=True)
 
         except Exception as e:
-            logging.error(f"Error during backtest: {e}")
+            logging.error(f"Error during backtest: {e}", exc_info=True)
             raise
 
-
-            # Save results to new database
     def save_results_to_db(self, strategy_name, strategy_params, ticker, start_date, end_date,
                            final_value, total_pl, total_pct_change, cagr, total_return,
                            std_dev, annual_vol, sharpe_ratio, sortino_ratio, max_drawdown,
                            win_rate, alpha, num_trades, information_ratio):
-        
-        # Use data/backtesting_results.db for the main summary database
-        conn = sqlite3.connect('data/backtesting_results.db')
+        logging.debug("Entering save_results_to_db...")
+        conn = sqlite3.connect(os.path.join(project_root, 'data', 'backtesting_results.db'))
         cursor = conn.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS backtest_summary (
@@ -305,7 +349,6 @@ class Backtester:
             )
         ''')
 
-        # Generate a unique identifier by combining strategy_name, ticker, params, and timestamp
         param_str = "_".join([f"{k}{v}" for k, v in sorted(strategy_params.items())])
         run_timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
         unique_id = f"{strategy_name}_{ticker}_{param_str}_{run_timestamp}"
@@ -341,19 +384,7 @@ class Backtester:
         ))
         conn.commit()
         conn.close()
-
-
-    def get_benchmark_daily_returns(self, benchmark_ticker):
-        if hasattr(self, 'benchmark_daily_returns'):
-            ser = pd.Series(self.benchmark_daily_returns)
-            ser.index = pd.to_datetime(ser.index)
-            return ser
-        else:
-            # If not run yet, run benchmark now
-            self.run_benchmark(benchmark_ticker)
-            ser = pd.Series(self.benchmark_daily_returns)
-            ser.index = pd.to_datetime(ser.index)
-            return ser
+        logging.debug("Backtest summary saved to DB.")
 
     def get_benchmark_daily_returns(self, benchmark_ticker):
         if hasattr(self, 'benchmark_daily_returns'):
@@ -361,12 +392,10 @@ class Backtester:
             ser.index = pd.to_datetime(ser.index)
             return ser
         else:
-            # If not run yet, run benchmark now
             self.run_benchmark(benchmark_ticker)
             ser = pd.Series(self.benchmark_daily_returns)
             ser.index = pd.to_datetime(ser.index)
             return ser
-
 
     def save_results(self, plot_filename=None):
         if not os.path.exists('data/results'):
@@ -416,7 +445,6 @@ class Backtester:
         ))
         conn.commit()
 
-        # New table for saving plot results
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS backtest_plots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -427,7 +455,6 @@ class Backtester:
             )
         ''')
 
-        # Get the last inserted backtest_id
         backtest_id = cursor.lastrowid
 
         if plot_filename is not None:
@@ -442,48 +469,24 @@ class Backtester:
     def get_performance_metrics(self):
         analyzer = self.results[0].analyzers
 
-        # Extract existing metrics
         final_value = self.final_value
         returns_analysis = analyzer.returns.get_analysis()
         sharpe_analysis = analyzer.sharpe.get_analysis()
         drawdown_analysis = analyzer.drawdown.get_analysis()
-
-        # Extract additional metrics from newly added analyzers
-        # annualreturn: a dict of year: return
         annual_return_analysis = analyzer.annualreturn.get_analysis()
-        # timereturn: daily returns as a dict {datetime: return}
         time_return_analysis = analyzer.timereturn.get_analysis()
-        # sqn: SQN value
         sqn_analysis = analyzer.sqn.get_analysis()
-
-        # Note: The user requested many metrics. Some are not directly available out-of-the-box.
-        # Below we report what we can from the analyzers we've added:
-        # - Final Portfolio Value: final_value
-        # - Total Return: returns_analysis['rtot']
-        # - Sharpe Ratio: sharpe_analysis.get('sharperatio', None)
-        # - Max Drawdown: drawdown_analysis['max']['drawdown']
-        # - Annual Returns (from AnnualReturn): annual_return_analysis
-        # - Daily Returns (from TimeReturn): time_return_analysis (dict of daily returns)
-        # - SQN: sqn_analysis['sqn']
-
-        # The user asked for CAGR, Win Rate, # of Trades, etc.:
-        # # of Trades: From trade_analysis inside run_backtest we have total trades info.
-        # We'll parse what we can from TradeAnalyzer here.
         trade_analysis = analyzer.trades.get_analysis()
         total_trades = trade_analysis.total.total if 'total' in trade_analysis and 'total' in trade_analysis.total else None
         won_trades = trade_analysis.won.total if 'won' in trade_analysis and 'total' in trade_analysis.won else None
-        lost_trades = trade_analysis.lost.total if 'lost' in trade_analysis and 'total' in trade_analysis.lost else None
         win_rate = None
         if won_trades is not None and total_trades is not None and total_trades > 0:
             win_rate = (won_trades / total_trades) * 100.0
 
-        # CAGR (not directly out-of-the-box), skip since user said if not out-of-box skip
-        # Standard Deviation, Annualized Volatility, Sortino Ratio, Alpha, Information Ratio also skip.
-
         metrics = {
             'Final Portfolio Value': final_value,
-            'Total Return': returns_analysis['rtot'],          # cumulative return
-            'Total % Return': returns_analysis['rtot'] * 100,  # convert to percentage
+            'Total Return': returns_analysis['rtot'],
+            'Total % Return': returns_analysis['rtot'] * 100,
             'Sharpe Ratio': sharpe_analysis.get('sharperatio', None),
             'Max Drawdown': drawdown_analysis['max']['drawdown'],
             'Annual Returns': annual_return_analysis,
@@ -496,7 +499,7 @@ class Backtester:
         return metrics
 
     def save_plot_filename(self, plot_filename):
-        with sqlite3.connect('data/backtesting_results.db') as conn:
+        with sqlite3.connect(os.path.join(project_root, 'data', 'backtesting_results.db')) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS backtest_plots (
@@ -508,7 +511,6 @@ class Backtester:
                 )
             ''')
 
-            # Retrieve the most recent backtest_id from backtest_summary
             cursor.execute("SELECT MAX(id) FROM backtest_summary")
             result = cursor.fetchone()
             backtest_id = result[0] if result else None
@@ -520,10 +522,7 @@ class Backtester:
                 ''', (backtest_id, plot_filename))
                 conn.commit()
             else:
-                # Optionally, handle the scenario where no backtest record exists
                 logging.warning("No backtest record found to associate the plot with.")
-
-
 
     def run_benchmark(self, benchmark_ticker, cash=100000.0, commission=0.0):
         conn = sqlite3.connect(self.db_path)

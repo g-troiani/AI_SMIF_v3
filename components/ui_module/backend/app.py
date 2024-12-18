@@ -1,3 +1,5 @@
+# File: components/ui_module/backend/app.py
+
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import os
@@ -18,14 +20,22 @@ import pytz
 import sqlite3
 
 
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, '..', '..', '..'))
 
-# Ensure the directory structure exist for plots
-import os
+# Insert the project_root at the start of sys.path
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+    
+# print(f"current_dir: {current_dir}")
+# print(f"project_root: {project_root}")
 
-if not os.path.exists('static'):
-    os.makedirs('static')
-if not os.path.exists('static/plots'):
-    os.makedirs('static/plots')
+# logging.info(f"current_dir: {current_dir}")
+# logging.info(f"project_root: {project_root}")
+    
+from utils.find_project_root import find_project_root
+    
+    
 
 # Configure logging with more detailed formatting
 logging.basicConfig(
@@ -90,7 +100,7 @@ data_manager_client = DataManagerClient()
 
 def get_tickers_file_path():
     """Get the absolute path to the tickers.csv file"""
-    return os.path.join(project_root, 'tickers.csv')
+    return os.path.join(project_root, 'data', 'tickers.csv')
 
 def log_request_info(request):
     logger.debug(f"""
@@ -718,7 +728,7 @@ def run_backtest():
         backtester.run_backtest()
 
         # Retrieve the metrics we just saved from the database
-        conn = sqlite3.connect('data/backtesting_results.db')
+        conn = sqlite3.connect(os.path.join(project_root, 'data', 'backtesting_results.db'))
         cursor = conn.cursor()
 
         # Get the most recent backtest record for this strategy/ticker/date combination
@@ -783,7 +793,7 @@ def run_backtest():
 @app.route('/api/backtests', methods=['GET'])
 def get_all_backtests():
     import sqlite3, json
-    conn = sqlite3.connect('data/backtesting_results.db')
+    conn = sqlite3.connect(os.path.join(project_root, 'data', 'backtesting_results.db'))
     cursor = conn.cursor()
     cursor.execute("""
         SELECT
