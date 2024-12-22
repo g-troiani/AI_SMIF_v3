@@ -1,3 +1,6 @@
+# components/data_management_module/alpaca_api.py
+
+
 import logging
 import time
 import requests
@@ -54,6 +57,7 @@ class AlpacaAPIClient:
 
     def fetch_historical_data(self, ticker, start_date, end_date, timeframe='1Min'):
         """Fetch historical data with proper formatting"""
+        self.logger.info(f"# SPRINT 6: Fetching historical data for {ticker} from {start_date} to {end_date}, timeframe={timeframe}")
         all_data = []
         current_date = start_date
         chunk_count = 0

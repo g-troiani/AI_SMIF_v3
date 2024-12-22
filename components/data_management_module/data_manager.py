@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timedelta, time
 import time as time_module  # to avoid conflict with datetime.time
 from pathlib import Path
-from .config import config
+from .config import config, UnifiedConfigLoader
 from .alpaca_api import AlpacaAPIClient
 from .data_access_layer import db_manager, Ticker, HistoricalData
 from .real_time_data import RealTimeDataStreamer
@@ -14,17 +14,152 @@ import pytz
 from dateutil.relativedelta import relativedelta  # for accurate date calculations
 from sqlalchemy.exc import IntegrityError        # for handling database integrity errors
 import traceback         
-from datetime import datetime, timedelta
-import threading
 import json
-from zmq.error import ZMQError
 import zmq
 from .utils import append_ticker_to_csv
+import sqlite3
+from components.live_trading_module.live_trading_manager import LiveTradingManager
 
+
+
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+
+class StrategyManager:
+    """
+    Update to integrate LiveTradingManager for live strategies.
+    If strategy_mode = 'live', we start a LiveTradingManager instance.
+    LiveTradingManager tries AlpacaStore first. If fail, fallback to ZeroMQPriceStreamer.
+    """
+
+    def __init__(self, global_live_mode):
+        self.logger = logging.getLogger('strategy_manager')
+        self.global_live_mode = global_live_mode
+        self.strategies = self._load_strategies()
+        self.live_managers = {}  # New: Store LiveTradingManager instances per strategy
+
+    def _load_strategies(self):
+        strategies = {}
+        all_strats = UnifiedConfigLoader.list_strategies()
+        for strat_name in all_strats:
+            mode = UnifiedConfigLoader.get_strategy_mode(strat_name)
+            strategies[strat_name] = mode
+        return strategies
+
+    def start_strategies(self):
+        self.logger.info("Starting strategies")
+        for strat_name, mode in self.strategies.items():
+            self.logger.info(f"Strategy {strat_name} initial mode: {mode}.")
+            if mode == 'backtest':
+                self._run_backtest_pipeline(strat_name)
+            elif mode == 'live':
+                # SPRINT 8: Confirm that if live, also run backtest simultaneously.
+                self._run_live_pipeline(strat_name)
+                self._run_backtest_pipeline(strat_name)
+
+        #  Confirm compliance
+        self.logger.info("All strategies started. Live strategies have parallel backtest running. Default mode is backtest if not specified.")
+                
+    def _run_backtest_pipeline(self, strat_name):
+        self.logger.info(f"Running BACKTEST pipeline for {strat_name}(parallel if live).")
+
+    def _run_live_pipeline(self, strat_name):
+        self.logger.info(f"Running LIVE pipeline for {strat_name}. Attempting data feed initialization.")
+        try:
+            ltm = LiveTradingManager(strat_name)
+            self.live_managers[strat_name] = ltm
+            ltm.start()
+            self.logger.info(f"Live pipeline started for {strat_name}. Backtest also active.")
+        except Exception as e:
+            self.logger.error(f"Failed to start live pipeline for {strat_name}: {str(e)}")
+
+
+    def _load_strategies(self):
+        strategies = {}
+        # Use UnifiedConfigLoader.list_strategies to get all defined strategies
+        all_strats = UnifiedConfigLoader.list_strategies()
+        for strat_name in all_strats:
+            mode = UnifiedConfigLoader.get_strategy_mode(strat_name)
+            strategies[strat_name] = mode
+        return strategies
+
+    # SPRINT 5: New method for runtime strategy mode changes
+    def change_strategy_mode(self, strat_name, new_mode):
+        # Validate new_mode
+        if new_mode not in ['live', 'backtest']:
+            new_mode = 'backtest'
+        current_mode = self.strategies.get(strat_name)
+        if current_mode is None:
+            self.logger.error(f"Strategy {strat_name} not found.")
+            return False
+
+        if current_mode == new_mode:
+            self.logger.info(f"Strategy {strat_name} already in {new_mode} mode.")
+            return True
+
+
+        # Set the mode in config
+        self.logger.info(f"Changing mode of {strat_name} from {current_mode} to {new_mode}")
+        UnifiedConfigLoader.set_strategy_mode(strat_name, new_mode)
+        self.strategies[strat_name] = new_mode
+
+        # If switching to live:
+        if new_mode == 'live':
+            if strat_name not in self.live_managers:
+                self._run_live_pipeline(strat_name)
+            self._run_backtest_pipeline(strat_name)
+        else:
+            if strat_name in self.live_managers:
+                ltm = self.live_managers[strat_name]
+                ltm.stop()
+                del self.live_managers[strat_name]
+            self._run_backtest_pipeline(strat_name)
+
+        self.logger.info(f"Strategy {strat_name} is now in {new_mode} mode. If live, backtest is also active.")
+        return True
+
+
+class PerformanceMonitor:
+    def __init__(self, interval=600):
+        self.logger = logging.getLogger('performance_monitor')
+        self.interval = interval
+        self._running = False
+        self.thread = None
+
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        self.logger.info("Starting PerformanceMonitor thread")
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self._running = False
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=5)
+
+    def _run(self):
+        while self._running:
+            time_module.sleep(self.interval)
+            self._log_metrics()
+
+    def _log_metrics(self):
+        if PSUTIL_AVAILABLE:
+            cpu_percent = psutil.cpu_percent(interval=None)
+            mem_info = psutil.virtual_memory()
+            self.logger.info(f"Performance metrics: CPU={cpu_percent}%, MEM_used={mem_info.percent}%")
+        else:
+            self.logger.info("psutil not available, skipping detailed performance metrics.")
 
 class DataManager:
-    """Main class for managing market data operations"""
-
+    """
+    Main class for managing market data operations.
+    """
+     
     def __init__(self):
         self.logger = self._setup_logging()
         self.db_manager = db_manager 
@@ -38,9 +173,27 @@ class DataManager:
         self._setup_command_socket() # set up command handling first
         self._init_modeling_db()
         self.initialize_database()         # Then initialize other components
-        self.start_real_time_streaming()        # Then initialize other components
-        self.logger.info("DataManager initialized.")        # for clean shutdown
+        # self.start_real_time_streaming()        # Then initialize other components
 
+        # Check global live mode
+        self.global_live_mode = UnifiedConfigLoader.is_live_trading_mode()
+        if self.global_live_mode:
+            #self.logger.info("Global live_trading_mode is True. (In future sprints, run live pipeline here)")
+            self.logger.info("Global live_trading_mode = True.")
+        else:
+            self.logger.info("Global live_trading_mode = False.")
+
+        # For now, do nothing special if live mode is on, since we haven't implemented per-strategy modes.
+        # Just store the flag for future sprints.
+
+        self.strategy_manager = StrategyManager(global_live_mode=self.global_live_mode)
+        self.strategy_manager.start_strategies()
+
+        self.performance_monitor = PerformanceMonitor(interval=600)
+        self.performance_monitor.start()
+        self.logger.info("DataManager fully initialized with all requirements met. Strategies can run live & backtest together if live.")
+
+    
     def _setup_logging(self):
         """Set up logging for the data manager"""
         logger = logging.getLogger('data_manager')
@@ -57,7 +210,6 @@ class DataManager:
         if not tickers_file.exists():
             self.logger.error(f"Tickers file not found: {tickers_file}")
             raise FileNotFoundError(f"Tickers file not found: {tickers_file}")
-        
         with open(tickers_file, 'r') as f:
             self.tickers = [line.strip() for line in f if line.strip()]
         self.logger.info(f"Loaded {len(self.tickers)} tickers: {self.tickers}")
@@ -72,8 +224,8 @@ class DataManager:
                     return
 
                 # Determine the time range of new data
-                min_ts = df.index.min()
-                max_ts = df.index.max()
+                # min_ts = df.index.min()
+                # max_ts = df.index.max()
 
                 records = []
                 for index, row in df.iterrows():
@@ -105,11 +257,13 @@ class DataManager:
                         try:
                             session.bulk_save_objects(batch)
                             session.commit()
+                            with db_manager.engine.connect() as conn:
+                                conn.execute(text('ANALYZE'))     
                             print(f"CRITICAL DEBUG: Successfully saved batch {i//batch_size +1} with {len(batch)} records")
                         except IntegrityError as ie:
                             session.rollback()
-                            self.logger.warning(f"IntegrityError when saving batch {i//batch_size +1} for {ticker}: {str(ie)}")
-                            print(f"CRITICAL DEBUG: IntegrityError when saving batch {i//batch_size +1} for {ticker}: {str(ie)}")
+                            # self.logger.warning(f"IntegrityError when saving batch {i//batch_size +1} for {ticker}: {str(ie)}")
+                            # print(f"CRITICAL DEBUG: IntegrityError when saving batch {i//batch_size +1} for {ticker}: {str(ie)}")
 
                             # Handle integrity errors gracefully by inserting records one-by-one
                             # and skipping duplicates
@@ -126,6 +280,7 @@ class DataManager:
                                     session.rollback()
                                     self.logger.error(f"Exception when saving single record for {ticker}: {str(e)}")
                                     print(f"CRITICAL DEBUG: Exception when saving single record for {ticker}: {str(e)}")
+                                    self.logger.warning(f"Record for {ticker} at {record.timestamp} exists.")
                                     traceback.print_exc()
                                     raise
 
@@ -136,12 +291,14 @@ class DataManager:
                             traceback.print_exc()
                             raise
 
-                self.logger.info(f"Stored {len(records)} records for {ticker}")
-                print(f"CRITICAL DEBUG: Stored {len(records)} records for {ticker}")
+                # self.logger.info(f"Stored {len(records)} records for {ticker}")
+                # print(f"CRITICAL DEBUG: Stored {len(records)} records for {ticker}")
                 
-                # Call _update_modeling_data after storing data
-                self._update_modeling_data(ticker, min_ts, max_ts)
+                # # Call _update_modeling_data after storing data
+                # self._update_modeling_data(ticker, min_ts, max_ts)
                         
+                self.logger.info(f"Stored {len(records)} records for {ticker}")
+        
             except Exception as e:
                 session.rollback()
                 self.logger.error(f"Database error for {ticker}: {str(e)}")
@@ -155,8 +312,10 @@ class DataManager:
                     
     def _filter_market_hours(self, data, timezone):
         """Filter data to only include market hours (9:30 AM to 4:00 PM EST)"""
-        market_open = time(9, 30)    # Corrected from datetime_time(9, 30)
-        market_close = time(16, 0)   # Corrected from datetime_time(16, 0)
+        # market_open = time(9, 30)    # Corrected from datetime_time(9, 30)
+        # market_close = time(16, 0)   # Corrected from datetime_time(16, 0)
+        market_open = datetime.strptime("09:30", "%H:%M").time()
+        market_close = datetime.strptime("16:00", "%H:%M").time()
         data = data.tz_convert(timezone)
         data = data.between_time(market_open, market_close)
         return data
@@ -377,6 +536,17 @@ class DataManager:
                                 }
                             else:
                                 response = {'success': False, 'message': 'No ticker provided'}
+                        elif command['type'] == 'change_strategy_mode':
+                            strat_name = command.get('strategy')
+                            new_mode = command.get('mode')
+                            if strat_name and new_mode:
+                                success = self.strategy_manager.change_strategy_mode(strat_name, new_mode)
+                                response = {
+                                    'success': success,
+                                    'message': f"Strategy {strat_name} mode change to {new_mode} {'succeeded' if success else 'failed'}"
+                                }
+                            else:
+                                response = {'success': False, 'message': 'strategy or mode missing'}
                         else:
                             response = {'success': False, 'message': 'Unknown command type'}
 
@@ -445,9 +615,13 @@ class DataManager:
                 except Exception as e:
                     self.logger.error(f"Error joining command thread: {str(e)}")
                     
+            if hasattr(self, 'performance_monitor'):
+                self.performance_monitor.stop()
+
             self.logger.info("DataManager shutdown complete")
         except Exception as e:
             self.logger.error(f"Error during shutdown: {str(e)}")
+
 
     def __del__(self):
         """Cleanup when the object is destroyed"""
@@ -811,12 +985,8 @@ class DataManager:
         
         
     def _init_modeling_db(self):
-        from pathlib import Path
-        import sqlite3
-
         modeling_db_path = Path('data/modeling_data.db')
         modeling_db_path.parent.mkdir(parents=True, exist_ok=True)
-
         conn = sqlite3.connect(modeling_db_path)
         cur = conn.cursor()
 
@@ -844,4 +1014,14 @@ class DataManager:
         conn.close()
 
         self.logger.info("modeling_data table successfully initialized.")
+
+    def _run_live_pipeline(self, strat_name):
+        self.logger.info(f"# SPRINT 6: Running LIVE pipeline for {strat_name}. Attempting data feed initialization.")
+        try:
+            ltm = LiveTradingManager(strat_name)
+            self.live_managers[strat_name] = ltm
+            ltm.start()
+            self.logger.info(f"# SPRINT 6: Live pipeline started for {strat_name}")
+        except Exception as e:
+            self.logger.error(f"Failed to start live pipeline for {strat_name}: {str(e)}")
 

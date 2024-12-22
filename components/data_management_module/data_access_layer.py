@@ -1,6 +1,6 @@
 # components/data_management_module/data_access_layer.py
 
-from sqlalchemy import create_engine, Column, String, Integer, Float, DateTime, ForeignKey, UniqueConstraint, func, text
+from sqlalchemy import create_engine, Column, String, Integer, Float, DateTime, ForeignKey, UniqueConstraint, text, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError
@@ -28,7 +28,12 @@ class HistoricalData(Base):
     volume = Column(Integer, nullable=False)
 
     # Ensure we don't have duplicate data points
-    __table_args__ = (UniqueConstraint('ticker_symbol', 'timestamp'),)
+    __table_args__ = (
+        UniqueConstraint('ticker_symbol', 'timestamp'),
+    )
+
+    # SPRINT 7: Added index for performance optimization
+    Index('idx_historical_data_ticker_ts', ticker_symbol, timestamp)
 
     @staticmethod
     def validate_price_data(open, high, low, close, volume):
@@ -83,6 +88,9 @@ class DatabaseManager:
             session.bulk_save_objects(records)
             session.commit()
             self.logger.info(f"Bulk inserted {len(records)} records")
+            # Added ANALYZE command after large inserts
+            with self.engine.connect() as conn:
+                conn.execute(text('ANALYZE'))
         except SQLAlchemyError as e:
             session.rollback()
             self.logger.error(f"Error in bulk insert: {str(e)}")
@@ -153,7 +161,7 @@ class DatabaseManager:
             # Add and commit the new record
             session.add(data)
             session.commit()
-            self.logger.info(f"Appended real-time data for {bar.symbol} at {bar.timestamp} to the database")
+            self.logger.info(f"Appended real-time data for {bar.symbol} at {bar.timestamp}")
         except IntegrityError as ie:
             session.rollback()
             self.logger.warning(f"Data for {bar.symbol} at {bar.timestamp} already exists in the database.")

@@ -3,6 +3,7 @@ from components.data_management_module.data_manager import DataManager
 import time
 import signal
 import sys
+from datetime import datetime, timedelta
 
 # Set up logging
 logging.basicConfig(
@@ -35,7 +36,9 @@ if __name__ == "__main__":
         logger.info("Starting real-time data streaming...")
         data_manager.start_real_time_streaming()
         
-        # Keep the script running and perform maintenance
+        # In Sprint 2, strategies run as per their modes (live/backtest).
+        # The data_manager.strategy_manager has started them.
+        # We just run the main loop as before.
         while True:
             try:
                 # Perform maintenance every 24 hours

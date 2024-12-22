@@ -3,6 +3,9 @@
 import os
 from configparser import ConfigParser
 from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 
 class DataConfig:
     def __init__(self):
@@ -30,7 +33,10 @@ class DataConfig:
             'data_frequency_minutes': '5',
             'batch_size': '1000',
             'zeromq_port': '5555',
-            'zeromq_topic': 'market_data'
+            'zeromq_topic': 'market_data',
+            'live_trading_mode': 'False',
+            'use_alpaca_store': 'False',
+            'live_trading_database_path': str(self.data_dir / 'live_trading_data.db')
         }
 
         # Data API settings
@@ -43,17 +49,20 @@ class DataConfig:
             'rate_limit_delay': '0.2'
         }
 
+        if 'strategies' not in self.config.sections():
+            self.config.add_section('strategies')
+
         # Validate required settings
         self._validate_config()
 
     def _validate_config(self):
         """Validate critical configuration settings"""
-        if not self.config['api']['key_id'] or not self.config['api']['secret_key']:
-            raise ValueError("Alpaca API credentials not found in environment variables")
+        if not self.config['DEFAULT']['database_path']:
+            raise ValueError("Database path missing from config")
 
-    def get(self, section, key):
+    def get(self, section, key, fallback=None):
         """Get a configuration value"""
-        return self.config.get(section, key)
+        return self.config.get(section, key, fallback=fallback)
 
     def get_int(self, section, key):
         """Get an integer configuration value"""
@@ -63,5 +72,66 @@ class DataConfig:
         """Get a float configuration value"""
         return self.config.getfloat(section, key)
 
+    def sections(self):
+        return self.config.sections()
+
+    def items(self, section):
+        return self.config.items(section)
+
 # Global config instance
 config = DataConfig()
+
+# Sprint 1: Added new class for unified configuration loading
+class UnifiedConfigLoader:
+    """
+    Unified configuration loader for live_trading_mode and use_alpaca_store.
+    
+      - We only read global live_trading_mode and use_alpaca_store keys.
+      - All strategies remain in backtest mode by default.
+      - Future sprints will add per-strategy modes.
+
+    Priority:
+      - ENV vars override config file.
+    """
+
+    @classmethod
+    def is_live_trading_mode(cls):
+        env_val = os.getenv('LIVE_TRADING_MODE', '')
+        if env_val.lower() in ['true', '1', 'yes']:
+            return True
+        elif env_val.lower() in ['false', '0', 'no', '']:
+            val = config.get('DEFAULT', 'live_trading_mode', fallback='False').lower() == 'true'
+            return val
+        return False
+
+    @classmethod
+    def use_alpaca_store(cls):
+        env_val = os.getenv('USE_ALPACA_STORE', '')
+        if env_val.lower() in ['true', '1', 'yes']:
+            return True
+        elif env_val.lower() in ['false', '0', 'no', '']:
+            val = config.get('DEFAULT', 'use_alpaca_store', fallback='False').lower() == 'true'
+            return val
+        return False
+
+    @classmethod
+    def get_strategy_mode(cls, strategy_name):
+        if not cls.is_live_trading_mode():
+            return 'backtest'
+        mode = config.get('strategies', strategy_name, fallback='backtest').lower()
+        if mode not in ['live', 'backtest']:
+            mode = 'backtest'
+        return mode
+    
+    @classmethod
+    def set_strategy_mode(cls, strategy_name, new_mode):
+        if new_mode not in ['live', 'backtest']:
+            new_mode = 'backtest'
+        config.config.set('strategies', strategy_name, new_mode)
+        logger.info(f"set_strategy_mode: Strategy {strategy_name} mode set to {new_mode} in runtime config.")
+
+    @classmethod
+    def list_strategies(cls):
+        if 'strategies' in config.sections():
+            return [item[0] for item in config.items('strategies')]
+        return ['default_strategy']    
