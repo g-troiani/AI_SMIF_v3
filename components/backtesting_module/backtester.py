@@ -7,6 +7,7 @@ import sqlite3
 import json
 import logging
 import os
+from pathlib import Path
 from datetime import datetime
 from .config import BacktestConfig
 from .exceptions import BacktestError, DataError
@@ -21,6 +22,15 @@ import matplotlib.pyplot as plt
 plt.rcParams['figure.figsize'] = (12, 6)
 plt.style.use('ggplot')  # a nice built-in style if you want a pretty look
 from utils.find_project_root import find_project_root
+
+# from components.data_management_module.config import UnifiedConfigLoader
+# If suggestion #2 introduced a unified config approach for offline usage,
+# we can keep a minimal import (only if we actually use it).
+# Otherwise, remove it entirely.
+# from components.data_management_module.config import config
+
+
+logger = logging.getLogger(__name__)
 
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -80,10 +90,14 @@ class PercentageInvestedObserver(bt.Observer):
 class Backtester:
     """
     Runs backtests using historical data and strategies from a local SQLite database.
+    This backtester does NOT reference or check 'live trading' mode at all.
     """
 
     def __init__(self, strategy_name, strategy_params, ticker, start_date=None, end_date=None, db_path=os.path.join(project_root, 'data', 'market_data.db'), percent_invest=100,
                  stop_loss=0.0, take_profit=0.0):
+        self.logger = logging.getLogger('Backtester')
+        # self.historical_years = UnifiedConfigLoader.get_backtest_setting('historical_data_years', default=5)
+        # self.logger.info(f"Using historical_data_years from UnifiedConfigLoader = {self.historical_years}")
         self.strategy_name = strategy_name
         self.strategy_params = strategy_params
         self.ticker = ticker
@@ -98,8 +112,21 @@ class Backtester:
         self.take_profit = take_profit
 
         self._set_default_dates_if_needed()
+        self.plot_filename = None  # if we generate a plot, store the path here
+
+        
+        # Example usage: unify or override the date range using config
+        # This is optional, but here is an illustration:
+        # years = UnifiedConfigLoader.get_backtest_setting('historical_data_years', default=5)
+        # self.logger.info(f"Using historical_data_years from UnifiedConfigLoader = {years}.")
+
+        # Potentially we can override start_date if needed
+        # (not necessarily recommended, but here's how you'd do it)
+        # if not self.start_date:
+        #     self.start_date = datetime.now() - timedelta(days=365 * years)
 
     def _set_default_dates_if_needed(self):
+        self.logger.debug("Setting default dates if needed")
         conn = sqlite3.connect(self.db_path)
         query = """
             SELECT MIN(timestamp) as min_ts, MAX(timestamp) as max_ts
@@ -121,7 +148,7 @@ class Backtester:
         if self.end_date is None:
             self.end_date = max_ts
 
-        logging.info(f"Date range set to {self.start_date} - {self.end_date} for {self.ticker}")
+        self.logger.info(f"Date range set to {self.start_date} - {self.end_date} for {self.ticker}")
 
     def load_data(self):
         logging.info(f"Loading data for {self.ticker} from {self.start_date} to {self.end_date}")
@@ -156,7 +183,13 @@ class Backtester:
         print(f"Total bars: {len(self.data)}")
 
     def run_backtest(self, cash=100000.0, commission=0.0):
-        logging.debug("Starting run_backtest method...")
+        
+        logger.info(
+        f"Running backtest for {self.ticker} from {self.start_date} to {self.end_date}, "
+        f"strategy={self.strategy_name}"
+        )
+        
+        self.logger.debug("Starting run_backtest method...")
         try:
             self.load_data()
             logging.debug("Data loaded successfully. Validating data...")

@@ -1,3 +1,6 @@
+// File: components/ui_module/frontend/src/pages/Strategy.tsx
+// Type: tsx
+
 import React, { useState } from 'react';
 import NewStrategyModal from '../components/NewStrategyModal';
 
@@ -5,9 +8,8 @@ const Strategy: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const handleOpenModal = () => {
-    console.log('Opening modal, current state:', isModalOpen);
+    // Open the "Add Strategy" modal.
     setIsModalOpen(true);
-    console.log('State after setting:', true);
   };
 
   return (
@@ -22,7 +24,10 @@ const Strategy: React.FC = () => {
         </button>
       </div>
 
-      <div className="hidden">Modal state: {isModalOpen ? 'open' : 'closed'}</div>
+      {/* For debugging or demonstration */}
+      <div className="hidden">
+        Modal state: {isModalOpen ? 'open' : 'closed'}
+      </div>
 
       <NewStrategyModal 
         isOpen={isModalOpen}
@@ -31,8 +36,15 @@ const Strategy: React.FC = () => {
 
       <div className="bg-white shadow rounded-lg">
         <div className="p-6">
-          <h3 className="text-lg font-medium text-gray-900 mb-4">Available Strategies</h3>
-          <div className="text-gray-500">No strategies configured</div>
+          <h3 className="text-lg font-medium text-gray-900 mb-4">
+            Available Strategies
+          </h3>
+          <div className="text-gray-500">
+            {/* No references to "PaperThenLive" or "Hybrid." 
+                Live vs. backtest logic is separate and 
+                not triggered automatically here. */}
+            No strategies configured
+          </div>
         </div>
       </div>
     </div>

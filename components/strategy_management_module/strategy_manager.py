@@ -62,3 +62,50 @@ class ParameterValidator:
             grid_params[param] = values
             
         return grid_params
+
+class StrategyManager:
+    """
+    Manages strategies, each of which can be in 'live' or 'backtest' mode, 
+    and validates their parameters.
+    """
+
+    def __init__(self):
+        self.logger = logging.getLogger('strategy_manager')
+        self.strategies = {}  # { 'strategy_name': {'mode': str, 'params': dict} }
+        self.parameter_validator = ParameterValidator()
+
+    def change_strategy_mode(self, strat_name: str, new_mode: str, params: Dict[str, Any] = None):
+        """
+        Change a strategy's mode and optionally update its parameters.
+        
+        Args:
+            strat_name: Name of the strategy
+            new_mode: Either 'live' or 'backtest'
+            params: Optional dictionary of strategy parameters to validate
+        """
+        if new_mode not in ['live', 'backtest']:
+            new_mode = 'backtest'
+
+        # Validate parameters if provided
+        if params:
+            try:
+                ParameterValidator.validate_parameters(strat_name, params)
+            except ValueError as e:
+                self.logger.error(f"Parameter validation failed: {e}")
+                return
+
+        # Initialize strategy if it doesn't exist
+        if strat_name not in self.strategies:
+            self.strategies[strat_name] = {'mode': 'backtest', 'params': params or {}}
+
+        current_mode = self.strategies[strat_name]['mode']
+        if current_mode == new_mode:
+            self.logger.info(f"Strategy {strat_name} is already in {new_mode} mode.")
+            return
+
+        # Update the mode and parameters
+        self.strategies[strat_name]['mode'] = new_mode
+        if params:
+            self.strategies[strat_name]['params'] = params
+        
+        self.logger.info(f"Changed {strat_name} from {current_mode} to {new_mode}.")

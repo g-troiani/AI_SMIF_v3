@@ -84,25 +84,29 @@ config = DataConfig()
 # Sprint 1: Added new class for unified configuration loading
 class UnifiedConfigLoader:
     """
-    Unified configuration loader for live_trading_mode and use_alpaca_store.
-    
-      - We only read global live_trading_mode and use_alpaca_store keys.
-      - All strategies remain in backtest mode by default.
-      - Future sprints will add per-strategy modes.
-
-    Priority:
-      - ENV vars override config file.
+    Loads global config, including both live and backtesting settings.
+    Simplifies references so the Backtester does not fetch environment variables directly.
     """
 
     @classmethod
+    def get_backtest_setting(cls, key, default=None):
+        """
+        Example: Retrieve a backtest-related config from environment or default values.
+        """
+        # For demonstration, just a single environment or fallback approach
+        if key == 'historical_data_years':
+            # e.g. environment variable, or fallback
+            return int(os.getenv('BACKTEST_DATA_YEARS', '5'))
+        # Additional keys can be handled similarly
+        return default
+
+    @classmethod
     def is_live_trading_mode(cls):
-        env_val = os.getenv('LIVE_TRADING_MODE', '')
-        if env_val.lower() in ['true', '1', 'yes']:
-            return True
-        elif env_val.lower() in ['false', '0', 'no', '']:
-            val = config.get('DEFAULT', 'live_trading_mode', fallback='False').lower() == 'true'
-            return val
-        return False
+        """
+        Already existing method from your original code or suggestion #1 example.
+        """
+        val = os.getenv('LIVE_TRADING_MODE', 'False')
+        return val.lower() in ['true', '1', 'yes']
 
     @classmethod
     def use_alpaca_store(cls):
