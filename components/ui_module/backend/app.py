@@ -20,21 +20,14 @@ import pytz
 import sqlite3
 
 
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '..', '..', '..'))
 
 # Insert the project_root at the start of sys.path
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
-    
-# print(f"current_dir: {current_dir}")
-# print(f"project_root: {project_root}")
 
-# logging.info(f"current_dir: {current_dir}")
-# logging.info(f"project_root: {project_root}")
-    
-from utils.find_project_root import find_project_root
-    
     
 
 # Configure logging with more detailed formatting
@@ -53,6 +46,38 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
+    
+    
+    
+from components.backtesting_module.backtrader.strategy_adapters import StrategyAdapter
+
+
+# DB_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'backtesting_results.db')
+DB_PATH = os.path.join(project_root, 'data', 'backtesting_results.db')
+
+def initialize_db():
+    """
+    Example single DB init function that ensures tables exist without duplicating code.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    # Existing 'backtest_summary' or other tables creation might already be here.
+
+    # 1) Create or ensure "strategies" table exists:
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS strategies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE,
+            mode TEXT DEFAULT 'backtest' CHECK(mode IN ('backtest','live')),
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    conn.commit()
+    conn.close()
+    
+    
 
 # ZeroMQ configuration for communication with data manager
 class DataManagerClient:
@@ -209,9 +234,28 @@ def internal_error(error):
     }), 500
 
 
+def seed_built_in_strategies():
+    # We avoid duplicating code; just do an upsert-like approach
+    built_in_strategies = list(StrategyAdapter.STRATEGIES.keys())
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    for strat_name in built_in_strategies:
+        cur.execute('''
+            INSERT INTO strategies (name)
+            VALUES (?)
+            ON CONFLICT(name) DO NOTHING
+        ''', (strat_name,))
+    conn.commit()
+    conn.close()
+
 def initialize_app():
     """Initialize the application with required setup"""
     try:
+        # Initialize database and seed strategies
+        initialize_db()
+        seed_built_in_strategies()
+        
         # Ensure tickers file exists
         tickers_file = get_tickers_file_path()
         if not os.path.exists(tickers_file):
@@ -512,8 +556,6 @@ def get_dashboard_data():
         }), 500
         
 
-     
-
 from flask import Flask, jsonify
 from flask_cors import CORS
 import os
@@ -679,10 +721,6 @@ def market_overview():
             'message': str(e)
         }), 500
 
-
-
-        
-
 @app.route('/api/backtest/strategies', methods=['GET'])
 def get_available_strategies():
     from components.backtesting_module.backtrader.strategy_adapters import StrategyAdapter
@@ -692,7 +730,6 @@ def get_available_strategies():
         'success': True,
         'strategies': strategies
     })
-
 
 
 @app.route('/api/backtest/run', methods=['POST'])
@@ -784,12 +821,6 @@ def run_backtest():
         }), 500
 
 
-
-
-
-
-
-
 @app.route('/api/backtests', methods=['GET'])
 def get_all_backtests():
     import sqlite3, json
@@ -856,8 +887,37 @@ def get_all_backtests():
     return jsonify({'success': True, 'results': results})
 
 
+@app.route('/api/strategies', methods=['GET'])
+def get_all_strategies():
+    """
+    Returns all strategy names and their mode, e.g. [ { name: 'MyStrat', mode: 'live' }, ... ]
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    rows = cur.execute("SELECT name, mode FROM strategies ORDER BY name ASC").fetchall()
+    conn.close()
+
+    data = [{"name": row[0], "mode": row[1]} for row in rows]
+    return jsonify({"success": True, "data": data})
 
 
+@app.route('/api/strategies/<strategy_name>', methods=['PATCH'])
+def update_strategy_mode(strategy_name):
+    payload = request.json
+    new_mode = payload.get('mode')
+    if new_mode not in ['backtest','live']:
+        return jsonify({"success": False, "message": "Invalid mode"}), 400
+    
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute('''
+        UPDATE strategies
+        SET mode = ?
+        WHERE name = ?
+    ''', (new_mode, strategy_name))
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True, "message": f"{strategy_name} updated to {new_mode}"})
 
 
 

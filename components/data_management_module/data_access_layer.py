@@ -7,6 +7,8 @@ from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from datetime import datetime, timedelta
 import logging
 from .config import config
+from sqlalchemy.sql import text
+
 
 Base = declarative_base()
 
