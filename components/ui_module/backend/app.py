@@ -57,14 +57,12 @@ DB_PATH = os.path.join(project_root, 'data', 'backtesting_results.db')
 
 def initialize_db():
     """
-    Example single DB init function that ensures tables exist without duplicating code.
+    Ensures the 'strategies' table exists and all needed columns are present.
     """
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
 
-    # Existing 'backtest_summary' or other tables creation might already be here.
-
-    # 1) Create or ensure "strategies" table exists:
+    # Basic table creation
     cur.execute('''
         CREATE TABLE IF NOT EXISTS strategies (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,6 +71,19 @@ def initialize_db():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # NEW: Try adding columns if they don't already exist
+    new_columns = [
+        ("allocation",    "REAL",  "0.0"),
+        ("tickers",       "TEXT",  "'[]'"),
+        ("stop_loss",     "REAL",  "0.0"),
+        ("take_profit",   "REAL",  "0.0"),
+    ]
+    for col_name, col_type, default_val in new_columns:
+        try:
+            cur.execute(f"ALTER TABLE strategies ADD COLUMN {col_name} {col_type} DEFAULT {default_val}")
+        except sqlite3.OperationalError:
+            pass  # Column likely exists
 
     conn.commit()
     conn.close()
@@ -721,16 +732,21 @@ def market_overview():
             'message': str(e)
         }), 500
 
+# @app.route('/api/backtest/strategies', methods=['GET'])
+# def get_available_strategies():
+#     from components.backtesting_module.backtrader.strategy_adapters import StrategyAdapter
+#     # StrategyAdapter.STRATEGIES is a dict { 'Name': StrategyClass, ... }
+#     strategies = list(StrategyAdapter.STRATEGIES.keys())
+#     return jsonify({
+#         'success': True,
+#         'strategies': strategies
+#     })
+
 @app.route('/api/backtest/strategies', methods=['GET'])
 def get_available_strategies():
     from components.backtesting_module.backtrader.strategy_adapters import StrategyAdapter
-    # StrategyAdapter.STRATEGIES is a dict { 'Name': StrategyClass, ... }
     strategies = list(StrategyAdapter.STRATEGIES.keys())
-    return jsonify({
-        'success': True,
-        'strategies': strategies
-    })
-
+    return jsonify({'success': True, 'strategies': strategies})
 
 @app.route('/api/backtest/run', methods=['POST'])
 def run_backtest():
@@ -887,37 +903,111 @@ def get_all_backtests():
     return jsonify({'success': True, 'results': results})
 
 
+# @app.route('/api/strategies', methods=['GET'])
+# def get_all_strategies():
+#     """
+#     Returns all strategy names and their mode, e.g. [ { name: 'MyStrat', mode: 'live' }, ... ]
+#     """
+#     conn = sqlite3.connect(DB_PATH)
+#     cur = conn.cursor()
+#     rows = cur.execute("SELECT name, mode FROM strategies ORDER BY name ASC").fetchall()
+#     conn.close()
+
+#     data = [{"name": row[0], "mode": row[1]} for row in rows]
+#     return jsonify({"success": True, "data": data})
+
 @app.route('/api/strategies', methods=['GET'])
 def get_all_strategies():
     """
-    Returns all strategy names and their mode, e.g. [ { name: 'MyStrat', mode: 'live' }, ... ]
+    Returns all strategies with their columns (name, mode, allocation, tickers, stop_loss, take_profit).
     """
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    rows = cur.execute("SELECT name, mode FROM strategies ORDER BY name ASC").fetchall()
+    # UPDATED: selecting the new columns
+    rows = cur.execute("""
+        SELECT name, mode, allocation, tickers, stop_loss, take_profit
+          FROM strategies
+         ORDER BY name ASC
+    """).fetchall()
     conn.close()
 
-    data = [{"name": row[0], "mode": row[1]} for row in rows]
+    data = []
+    for row in rows:
+        # tickers is stored as JSON text, so parse it
+        t = []
+        try:
+            t = json.loads(row[3]) if row[3] else []
+        except:
+            pass
+
+        data.append({
+            'name': row[0],
+            'mode': row[1],
+            'allocation': row[2],
+            'tickers': t,
+            'stop_loss': row[4],
+            'take_profit': row[5],
+        })
     return jsonify({"success": True, "data": data})
+
 
 
 @app.route('/api/strategies/<strategy_name>', methods=['PATCH'])
 def update_strategy_mode(strategy_name):
+    """
+    Updates mode and optional fields: allocation, tickers, stop_loss, take_profit
+    """
     payload = request.json
-    new_mode = payload.get('mode')
+    new_mode = payload.get('mode', 'backtest')
+
+    allocation = payload.get('allocation', 0.0)
+    tickers = payload.get('tickers', [])
+    stop_loss = payload.get('stop_loss', 0.0)
+    take_profit = payload.get('take_profit', 0.0)
+
     if new_mode not in ['backtest','live']:
         return jsonify({"success": False, "message": "Invalid mode"}), 400
-    
+
+    # Convert tickers array to JSON string for DB
+    tickers_str = json.dumps(tickers)
+
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
+    # UPDATED: now sets the new columns too
     cur.execute('''
         UPDATE strategies
-        SET mode = ?
-        WHERE name = ?
-    ''', (new_mode, strategy_name))
+           SET mode        = ?,
+               allocation  = ?,
+               tickers     = ?,
+               stop_loss   = ?,
+               take_profit = ?
+         WHERE name        = ?
+    ''', (
+        new_mode, 
+        allocation, 
+        tickers_str, 
+        stop_loss, 
+        take_profit,
+        strategy_name
+    ))
     conn.commit()
     conn.close()
-    return jsonify({"success": True, "message": f"{strategy_name} updated to {new_mode}"})
+
+    return jsonify({
+        "success": True,
+        "message": f"{strategy_name} updated to {new_mode}",
+        "data": {
+            "allocation": allocation,
+            "tickers": tickers,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit
+        }
+    })
+
+
+
+
+
 
 
 
