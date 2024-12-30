@@ -3,6 +3,15 @@
 
 import logging
 from typing import Dict, Any, List
+import sqlite3
+import json
+
+from components.data_management_module.config import config  # Ensure we use the unified config in data_management_module
+# If we need a live trading manager import:
+from components.live_trading_module.live_trading_manager import LiveTradingManager
+
+logger = logging.getLogger('strategy_manager')
+
 
 class ParameterValidator:
     """
@@ -65,47 +74,149 @@ class ParameterValidator:
 
 class StrategyManager:
     """
-    Manages strategies, each of which can be in 'live' or 'backtest' mode, 
-    and validates their parameters.
+    Manages strategies, each of which can be in 'live' or 'backtest' mode,
+    and validates their parameters. Also persists modes in a local DB so that
+    if the server restarts, the 'live' ones can be auto-started again.
     """
 
     def __init__(self):
-        self.logger = logging.getLogger('strategy_manager')
-        self.strategies = {}  # { 'strategy_name': {'mode': str, 'params': dict} }
-        self.parameter_validator = ParameterValidator()
+        self.logger = logger
+        self.strategies = {}  # { strategy_name: {'mode': str, 'params': dict}, ... }
+        self.live_managers = {}  # { strategy_name: LiveTradingManager instance }
+        self.parameter_validator = ParameterValidator()  # if you have one
+
+        # Optional: we store reference to DB path
+        self.db_path = config.get('DEFAULT', 'database_path', fallback='data/strategies.db')
+        # For the 'strategies' table, we can store mode in it
+        self._init_db()
+        self._load_strategies_from_db()
+
+        # Auto-start any that are 'live'
+        self._auto_start_live_strategies()
+
+    def _init_db(self):
+        """
+        Creates or updates the 'strategies' table that holds each strategy's name + mode.
+        """
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+
+        # 'mode' is either 'live' or 'backtest' by design; we can store more columns if needed
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS strategies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE,
+                mode TEXT DEFAULT 'backtest' CHECK (mode IN ('live','backtest')),
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                params TEXT DEFAULT '{}'
+            )
+        ''')
+        conn.commit()
+        conn.close()
+
+    def _load_strategies_from_db(self):
+        """
+        Loads strategies from DB into self.strategies. 
+        (If any are 'live', we handle them in _auto_start_live_strategies.)
+        """
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        rows = cur.execute("SELECT name, mode, params FROM strategies").fetchall()
+        conn.close()
+
+        # Fill self.strategies
+        for (name, mode, params_str) in rows:
+            try:
+                params_dict = json.loads(params_str) if params_str else {}
+            except:
+                params_dict = {}
+            self.strategies[name] = {
+                'mode': mode,
+                'params': params_dict
+            }
+        self.logger.info(f"Loaded {len(self.strategies)} strategies from DB.")
+
+    def _auto_start_live_strategies(self):
+        """
+        For any strategy in self.strategies that has mode='live', start it automatically 
+        so that if server restarts, they remain live.
+        """
+        for strat_name, strat_info in self.strategies.items():
+            if strat_info['mode'] == 'live':
+                self._run_live_pipeline(strat_name)
+
+    def _run_live_pipeline(self, strat_name: str):
+        """
+        Start or ensure we have a live manager for the given strategy
+        """
+        if strat_name in self.live_managers:
+            self.logger.info(f"Strategy {strat_name} is already running in live mode.")
+            return
+        # Otherwise create a LiveTradingManager
+        self.logger.info(f"Starting live trading manager for {strat_name}.")
+        manager = LiveTradingManager(strat_name=strat_name)
+        manager.start()
+        self.live_managers[strat_name] = manager
+
+    def _stop_live_pipeline(self, strat_name: str):
+        """
+        Stop the live manager if it exists
+        """
+        if strat_name in self.live_managers:
+            self.logger.info(f"Stopping live trading for {strat_name}")
+            self.live_managers[strat_name].stop()
+            del self.live_managers[strat_name]
 
     def change_strategy_mode(self, strat_name: str, new_mode: str, params: Dict[str, Any] = None):
         """
-        Change a strategy's mode and optionally update its parameters.
-        
-        Args:
-            strat_name: Name of the strategy
-            new_mode: Either 'live' or 'backtest'
-            params: Optional dictionary of strategy parameters to validate
+        Change a strategy's mode and optionally update its parameters in the DB.
+        If new_mode='live', auto-start that pipeline. If 'backtest', stop the pipeline.
         """
-        if new_mode not in ['live', 'backtest']:
+        if new_mode not in ['live','backtest']:
             new_mode = 'backtest'
 
-        # Validate parameters if provided
-        if params:
-            try:
-                ParameterValidator.validate_parameters(strat_name, params)
-            except ValueError as e:
-                self.logger.error(f"Parameter validation failed: {e}")
-                return
+        # Validate or parse 'params' if needed
+        if params is None:
+            params = {}
 
-        # Initialize strategy if it doesn't exist
+        # If not present, create an entry
         if strat_name not in self.strategies:
-            self.strategies[strat_name] = {'mode': 'backtest', 'params': params or {}}
+            self.strategies[strat_name] = {'mode': 'backtest', 'params': {}}
+            self._insert_new_strategy(strat_name, new_mode, params)
+        else:
+            # Just update the DB record
+            self._update_strategy_mode_db(strat_name, new_mode, params)
 
-        current_mode = self.strategies[strat_name]['mode']
-        if current_mode == new_mode:
-            self.logger.info(f"Strategy {strat_name} is already in {new_mode} mode.")
-            return
-
-        # Update the mode and parameters
+        old_mode = self.strategies[strat_name]['mode']
         self.strategies[strat_name]['mode'] = new_mode
-        if params:
-            self.strategies[strat_name]['params'] = params
-        
-        self.logger.info(f"Changed {strat_name} from {current_mode} to {new_mode}.")
+        self.strategies[strat_name]['params'] = params
+
+        # If switching from live -> backtest, stop manager
+        if old_mode == 'live' and new_mode == 'backtest':
+            self._stop_live_pipeline(strat_name)
+        elif old_mode != 'live' and new_mode == 'live':
+            self._run_live_pipeline(strat_name)
+
+        self.logger.info(f"Strategy {strat_name} changed from {old_mode} to {new_mode} in DB & memory.")
+
+    def _insert_new_strategy(self, strat_name: str, new_mode: str, params: Dict[str, Any]):
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute('''
+            INSERT INTO strategies (name, mode, params)
+            VALUES (?, ?, ?)
+        ''', (strat_name, new_mode, json.dumps(params)))
+        conn.commit()
+        conn.close()
+
+    def _update_strategy_mode_db(self, strat_name: str, new_mode: str, params: Dict[str, Any]):
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute('''
+            UPDATE strategies
+               SET mode = ?,
+                   params = ?
+             WHERE name = ?
+        ''', (new_mode, json.dumps(params), strat_name))
+        conn.commit()
+        conn.close()
