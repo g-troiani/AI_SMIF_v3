@@ -6,7 +6,7 @@ import os
 import json
 from datetime import datetime
 from typing import Optional, Dict, Any
-from .config import CONFIG  # Changed from config
+from ..data_management_module.config import CONFIG  # Changed from config
 
 class OrderManager:
     """

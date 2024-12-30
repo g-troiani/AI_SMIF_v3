@@ -3,9 +3,9 @@
 
 from .execution_engine import ExecutionEngine
 from .trade_signal import TradeSignal
-from .alpaca_api import AlpacaAPIClient
+from ..data_management_module.alpaca_api import AlpacaAPIClient
 from .order_manager import OrderManager
-from .config import CONFIG
+from ..data_management_module.config import CONFIG
 
 __all__ = [
     'ExecutionEngine',

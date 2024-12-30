@@ -12,8 +12,8 @@ import logging
 from typing import Optional, Dict, Any
 from .trade_signal import TradeSignal
 from .order_manager import OrderManager
-from .alpaca_api import AlpacaAPIClient
-from .config import CONFIG
+from ..data_management_module.alpaca_api import AlpacaAPIClient
+from ..data_management_module.config import CONFIG
 
 # File: components/trading_execution_engine/execution_engine.py
 # Type: py

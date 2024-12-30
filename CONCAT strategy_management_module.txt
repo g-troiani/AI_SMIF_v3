@@ -1,0 +1,598 @@
+# Module: strategy_management_module
+
+# File: components/strategy_management_module/__init__.py
+# Type: py
+
+# File: components/strategy_management_module/__init__.py
+# Type: py
+
+# File: components/strategy_management_module/__init__.py
+"""
+Strategy Management Module - Handles trading strategy configuration and execution
+"""
+from .strategies.strategy_base import StrategyBase
+
+
+
+
+# File: components/strategy_management_module/config.py
+# Type: py
+
+# File: components/strategy_management_module/config.py
+"""
+Changes:
+- Added configuration constants for strategies
+- Added type hints and docstring
+"""
+"""
+Configuration settings for the Strategy Management Module
+"""
+# Default settings for strategies
+STRATEGY_SETTINGS = {
+    'default_allocation': 5000,  # Default capital allocation per strategy
+    'max_active_strategies': 5,  # Maximum number of concurrent active strategies
+    'validation_thresholds': {
+        'min_sharpe_ratio': 0.5,
+        'max_drawdown': -0.2
+    }
+}
+
+# File: components/strategy_management_module/strategy_manager.py
+# Type: py
+
+# File: components/strategy_management_module/strategy_manager.py
+# Type: py
+
+import logging
+from typing import Dict, Any, List
+
+class ParameterValidator:
+    """
+    Validates strategy parameters and enforces optimization limits
+    """
+    DEFAULT_RANGES = {
+        'MovingAverageCrossover': {
+            'short_window': {'min': 5, 'max': 15, 'step': 1},
+            'long_window': {'min': 10, 'max': 20, 'step': 1}
+        },
+        'RSIStrategy': {
+            'rsi_period': {'min': 5, 'max': 30, 'step': 5},
+            'oversold': {'min': 20, 'max': 40, 'step': 5},
+            'overbought': {'min': 60, 'max': 80, 'step': 5}
+        },
+        'MACDStrategy': {
+            'fast_period': {'min': 12, 'max': 16, 'step': 1},
+            'slow_period': {'min': 26, 'max': 30, 'step': 1},
+            'signal_period': {'min': 9, 'max': 12, 'step': 1}
+        },
+        'BollingerBandsStrategy': {
+            'window': {'min': 20, 'max': 30, 'step': 5},
+            'num_std': {'min': 2, 'max': 3, 'step': 0.5}
+        }
+    }
+       
+    @staticmethod
+    def validate_parameters(strategy_name: str, params: Dict[str, Any]) -> bool:
+        if strategy_name not in ParameterValidator.DEFAULT_RANGES:
+            logging.warning(f"No validation rules for strategy: {strategy_name}")
+            return True
+            
+        ranges = ParameterValidator.DEFAULT_RANGES[strategy_name]
+        for param, value in params.items():
+            if param in ranges:
+                if value < ranges[param]['min'] or value > ranges[param]['max']:
+                    raise ValueError(
+                        f"Parameter {param} value {value} outside valid range "
+                        f"({ranges[param]['min']}-{ranges[param]['max']})"
+                    )
+        return True
+
+    @staticmethod
+    def generate_grid_parameters(strategy_name: str) -> Dict[str, List[float]]:
+        if strategy_name not in ParameterValidator.DEFAULT_RANGES:
+            raise ValueError(f"No grid search parameters defined for {strategy_name}")
+            
+        ranges = ParameterValidator.DEFAULT_RANGES[strategy_name]
+        grid_params = {}
+        
+        for param, range_info in ranges.items():
+            values = list(range(
+                range_info['min'],
+                range_info['max'] + range_info['step'],
+                range_info['step']
+            ))
+            grid_params[param] = values
+            
+        return grid_params
+
+class StrategyManager:
+    """
+    Manages strategies, each of which can be in 'live' or 'backtest' mode, 
+    and validates their parameters.
+    """
+
+    def __init__(self):
+        self.logger = logging.getLogger('strategy_manager')
+        self.strategies = {}  # { 'strategy_name': {'mode': str, 'params': dict} }
+        self.parameter_validator = ParameterValidator()
+
+    def change_strategy_mode(self, strat_name: str, new_mode: str, params: Dict[str, Any] = None):
+        """
+        Change a strategy's mode and optionally update its parameters.
+        
+        Args:
+            strat_name: Name of the strategy
+            new_mode: Either 'live' or 'backtest'
+            params: Optional dictionary of strategy parameters to validate
+        """
+        if new_mode not in ['live', 'backtest']:
+            new_mode = 'backtest'
+
+        # Validate parameters if provided
+        if params:
+            try:
+                ParameterValidator.validate_parameters(strat_name, params)
+            except ValueError as e:
+                self.logger.error(f"Parameter validation failed: {e}")
+                return
+
+        # Initialize strategy if it doesn't exist
+        if strat_name not in self.strategies:
+            self.strategies[strat_name] = {'mode': 'backtest', 'params': params or {}}
+
+        current_mode = self.strategies[strat_name]['mode']
+        if current_mode == new_mode:
+            self.logger.info(f"Strategy {strat_name} is already in {new_mode} mode.")
+            return
+
+        # Update the mode and parameters
+        self.strategies[strat_name]['mode'] = new_mode
+        if params:
+            self.strategies[strat_name]['params'] = params
+        
+        self.logger.info(f"Changed {strat_name} from {current_mode} to {new_mode}.")
+
+# File: components/strategy_management_module/strategies/__init__.py
+# Type: py
+
+# File: components/strategy_management_module/strategies/__init__.py
+# Type: py
+
+from .strategy_base import StrategyBase
+
+# File: components/strategy_management_module/strategies/bollinger_bands_strategy.py
+# Type: py
+
+class BollingerBandsStrategy(BaseStrategyWithSLTP):
+    params = (
+        ('period', 20),
+        ('devfactor', 2),
+        ('stop_loss', 0.0),
+        ('take_profit', 0.0),
+    )
+
+    def __init__(self):
+        # Initialize parent class to ensure it sets up stop_loss and take_profit
+        super().__init__()
+        self.boll = bt.indicators.BollingerBands(
+            self.data.close,
+            period=self.params.period,
+            devfactor=self.params.devfactor
+        )
+
+    def next(self):
+        self.check_sl_tp()  # This checks for stop loss / take profit
+        if self.data.close[0] < self.boll.lines.bot[0] and not self.position:
+            self.buy()
+        elif self.data.close[0] > self.boll.lines.top[0] and self.position:
+            self.sell()
+
+
+# File: components/strategy_management_module/strategies/macd_strategy.py
+# Type: py
+
+# File: components/strategy_management_module/strategies/macd_strategy.py
+# Type: py
+
+from components.strategy_management_module.strategies.strategy_base import StrategyBase
+import pandas as pd
+
+class MACDStrategy(StrategyBase):
+    """Moving Average Convergence Divergence (MACD) Strategy."""
+
+    default_params = {
+        'fast_period': 12,
+        'slow_period': 26,
+        'signal_period': 9
+    }
+
+    def __init__(self, params=None):
+        if params is None:
+            params = self.default_params
+        super().__init__(params)
+
+    def validate_params(self):
+        fast_period = self.params.get('fast_period')
+        slow_period = self.params.get('slow_period')
+        signal_period = self.params.get('signal_period')
+
+        if not all(isinstance(x, int) and x > 0 
+                  for x in [fast_period, slow_period, signal_period]):
+            raise ValueError("All periods must be positive integers")
+        if fast_period >= slow_period:
+            raise ValueError("fast_period must be less than slow_period")
+
+    def generate_signals(self, data):
+        exp1 = data['close'].ewm(span=self.params['fast_period'], adjust=False).mean()
+        exp2 = data['close'].ewm(span=self.params['slow_period'], adjust=False).mean()
+        macd = exp1 - exp2
+        signal_line = macd.ewm(span=self.params['signal_period'], adjust=False).mean()
+        
+        signals = pd.DataFrame(index=data.index)
+        signals['signal'] = 0.0
+        signals['signal'] = (macd > signal_line).astype(float)
+        signals['positions'] = signals['signal'].diff()
+        
+        return signals
+
+# File: components/strategy_management_module/strategies/momentum_stratey.py
+# Type: py
+
+# File: components/strategy_management_module/strategies/momentum_strategy.py
+# Type: py
+
+from components.strategy_management_module.strategies.strategy_base import StrategyBase
+import pandas as pd
+
+class MomentumStrategy(StrategyBase):
+    """Simple Momentum Strategy."""
+
+    default_params = {
+        'lookback_period': 20,
+        'threshold': 0
+    }
+
+    def __init__(self, params=None):
+        if params is None:
+            params = self.default_params
+        super().__init__(params)
+
+    def validate_params(self):
+        lookback_period = self.params.get('lookback_period')
+        threshold = self.params.get('threshold')
+
+        if not isinstance(lookback_period, int) or lookback_period <= 0:
+            raise ValueError("lookback_period must be a positive integer")
+        if not isinstance(threshold, (int, float)):
+            raise ValueError("threshold must be a number")
+
+    def generate_signals(self, data):
+        momentum = data['close'].pct_change(periods=self.params['lookback_period'])
+        
+        signals = pd.DataFrame(index=data.index)
+        signals['signal'] = 0.0
+        signals['signal'] = (momentum > self.params['threshold']).astype(float)
+        signals['positions'] = signals['signal'].diff()
+        
+        return signals
+
+
+# File: components/strategy_management_module/strategies/moving_average_crossover.py
+# Type: py
+
+# File: components/strategy_management_module/strategies/moving_average_crossover.py
+# Type: py
+
+import logging
+import pandas as pd
+import numpy as np
+from typing import Dict
+from .strategy_base import StrategyBase
+
+class MovingAverageCrossoverStrategy(StrategyBase):
+    """Moving Average Crossover trading strategy."""
+
+    default_params = {
+        'short_window': 40,
+        'long_window': 100
+    }
+
+    def __init__(self, params: Dict = None):
+        self.logger = logging.getLogger(__name__)
+        super().__init__(params or self.default_params)
+
+    def validate_params(self) -> None:
+        short_window = self.params.get('short_window')
+        long_window = self.params.get('long_window')
+
+        if not all(isinstance(x, int) and x > 0 for x in [short_window, long_window]):
+            raise ValueError("Windows must be positive integers")
+        if short_window >= long_window:
+            raise ValueError("short_window must be less than long_window")
+
+    def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
+        try:
+            signals = pd.DataFrame(index=data.index)
+            signals['signal'] = 0.0
+
+            signals['short_mavg'] = data['close'].rolling(
+                window=self.params['short_window'], 
+                min_periods=1).mean()
+            signals['long_mavg'] = data['close'].rolling(
+                window=self.params['long_window'], 
+                min_periods=1).mean()
+
+            signals.loc[signals.index, 'signal'] = np.where(
+                signals['short_mavg'] > signals['long_mavg'], 1.0, 0.0)
+            signals['positions'] = signals['signal'].diff()
+
+            return signals
+        except Exception as e:
+            self.logger.error(f"Error generating signals: {e}")
+            raise
+
+
+# File: components/strategy_management_module/strategies/rsi_strategy.py
+# Type: py
+
+# File: components/strategy_management_module/strategies/rsi_strategy.py
+# Type: py
+
+from components.strategy_management_module.strategies.strategy_base import StrategyBase
+import pandas as pd
+
+class RSIStrategy(StrategyBase):
+    """Relative Strength Index (RSI) Strategy."""
+
+    default_params = {
+        'period': 14,
+        'overbought': 70,
+        'oversold': 30
+    }
+
+    def __init__(self, params=None):
+        if params is None:
+            params = self.default_params
+        super().__init__(params)
+
+    def validate_params(self):
+        period = self.params.get('period')
+        overbought = self.params.get('overbought')
+        oversold = self.params.get('oversold')
+
+        if not isinstance(period, int) or period <= 0:
+            raise ValueError("period must be a positive integer")
+        if not (0 < oversold < overbought < 100):
+            raise ValueError("Invalid overbought/oversold levels")
+
+    def generate_signals(self, data):
+        delta = data['close'].diff()
+        gain = delta.where(delta > 0, 0).fillna(0)
+        loss = (-delta.where(delta < 0, 0)).fillna(0)
+        
+        avg_gain = gain.rolling(window=self.params['period'], min_periods=1).mean()
+        avg_loss = loss.rolling(window=self.params['period'], min_periods=1).mean()
+        
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+
+        signals = pd.DataFrame(index=data.index)
+        signals['signal'] = 0.0
+        signals.loc[rsi > self.params['overbought'], 'signal'] = -1.0
+        signals.loc[rsi < self.params['oversold'], 'signal'] = 1.0
+        signals['positions'] = signals['signal'].diff()
+
+        return signals
+
+# File: components/strategy_management_module/strategies/strategy_base.py
+# Type: py
+
+# File: components/strategy_management_module/strategies/strategy_base.py
+# Type: py
+
+from abc import ABC, abstractmethod
+from typing import Dict
+import pandas as pd
+
+class StrategyBase(ABC):
+    """Base class for all trading strategies."""
+
+    def __init__(self, params: Dict):
+        self.params = params
+        self.validate_params()
+
+    @abstractmethod
+    def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
+        pass
+
+    @abstractmethod
+    def validate_params(self) -> None:
+        pass
+
+
+# File: components/strategy_management_module/strategies/backtrader/__init__.py
+# Type: py
+
+# File: components/strategy_management_module/strategies/backtrader/__init__.py
+# Type: py
+
+from .strategy_base import MyBaseStrategy
+from .macd import MACDStrategy
+from .momentum import MomentumStrategy
+from .moving_average_crossover import MovingAverageCrossoverStrategy
+from .rsi import RSIStrategy
+from .bollinger_bands import BollingerBandsStrategy
+
+# File: components/strategy_management_module/strategies/backtrader/bollinger_bands.py
+# Type: py
+
+# File: components/strategy_management_module/strategies/backtrader/bollinger_bands.py
+# Type: py
+
+import backtrader as bt
+
+class BollingerBandsStrategy(bt.Strategy):
+    params = (
+        ('window', 20),
+        ('num_std', 2.0),
+    )
+
+    def __init__(self):
+        self.bbands = bt.ind.BollingerBands(self.data.close, period=self.p.window, devfactor=self.p.num_std)
+
+    def next(self):
+        if not self.position and self.data.close[0] < self.bbands.lines.bot[0]:
+            self.buy()
+        elif self.position and self.data.close[0] > self.bbands.lines.top[0]:
+            self.close()
+
+# File: components/strategy_management_module/strategies/backtrader/example_usage.py
+# Type: py
+
+# File: components/strategy_management_module/strategies/backtrader/example_usage.py
+
+
+import backtrader as bt
+import pandas as pd
+
+# Example: Using the MovingAverageCrossoverStrategy
+cerebro = bt.Cerebro()
+
+# Load your data into a Pandas DataFrame 'my_pandas_df' with at least ['open','high','low','close','volume']
+data = bt.feeds.PandasData(dataname=my_pandas_df)
+
+cerebro.adddata(data)
+
+# Add one of the strategies, for example MACDStrategy
+cerebro.addstrategy(MACDStrategy, fast_period=12, slow_period=26, signal_period=9)
+
+cerebro.broker.setcash(10000)
+cerebro.broker.setcommission(commission=0.001)
+
+results = cerebro.run()
+cerebro.plot()
+
+
+# File: components/strategy_management_module/strategies/backtrader/macd.py
+# Type: py
+
+# File: components/strategy_management_module/strategies/backtrader/macd.py
+# Type: py
+
+import backtrader as bt
+
+class MACDStrategy(bt.Strategy):
+    params = (
+        ('fast_period', 12),
+        ('slow_period', 26),
+        ('signal_period', 9),
+    )
+
+    def __init__(self):
+        self.macd = bt.ind.MACD(
+            self.data.close,
+            period_me1=self.p.fast_period,
+            period_me2=self.p.slow_period,
+            period_signal=self.p.signal_period
+        )
+
+    def next(self):
+        if self.macd.macd[0] > self.macd.signal[0] and not self.position:
+            self.buy()
+        elif self.macd.macd[0] < self.macd.signal[0] and self.position:
+            self.close()
+
+# File: components/strategy_management_module/strategies/backtrader/momentum.py
+# Type: py
+
+# File: components/strategy_management_module/strategies/backtrader/momentum.py
+# Type: py
+
+import backtrader as bt
+
+class MomentumStrategy(bt.Strategy):
+    params = (
+        ('lookback_period', 20),
+        ('threshold', 0),
+    )
+
+    def __init__(self):
+        pass
+
+    def next(self):
+        if len(self.data) > self.p.lookback_period:
+            past_price = self.data.close[-self.p.lookback_period]
+            current_price = self.data.close[0]
+            momentum = (current_price / past_price) - 1.0
+
+            if not self.position and momentum > self.p.threshold:
+                self.buy()
+            elif self.position and momentum <= self.p.threshold:
+                self.close()
+
+# File: components/strategy_management_module/strategies/backtrader/moving_average_crossover.py
+# Type: py
+
+# File: components/strategy_management_module/strategies/backtrader/moving_average_crossover.py
+# Type: py
+
+import backtrader as bt
+
+class MovingAverageCrossoverStrategy(bt.Strategy):
+    params = (
+        ('short_window', 40),
+        ('long_window', 100),
+    )
+
+    def __init__(self):
+        self.short_sma = bt.ind.SMA(self.data.close, period=self.p.short_window)
+        self.long_sma = bt.ind.SMA(self.data.close, period=self.p.long_window)
+
+    def next(self):
+        if not self.position and self.short_sma[0] > self.long_sma[0]:
+            self.buy()
+        elif self.position and self.short_sma[0] < self.long_sma[0]:
+            self.close()
+
+
+# File: components/strategy_management_module/strategies/backtrader/rsi.py
+# Type: py
+
+# File: components/strategy_management_module/strategies/backtrader/rsi.py
+# Type: py
+
+import backtrader as bt
+
+class RSIStrategy(bt.Strategy):
+    params = (
+        ('period', 14),
+        ('overbought', 70),
+        ('oversold', 30),
+    )
+
+    def __init__(self):
+        self.rsi = bt.ind.RSI(self.data.close, period=self.p.period)
+
+    def next(self):
+        if not self.position and self.rsi[0] < self.p.oversold:
+            self.buy()
+        elif self.position and self.rsi[0] > self.p.overbought:
+            self.close()
+
+# File: components/strategy_management_module/strategies/backtrader/strategy_base.py
+# Type: py
+
+# File: components/strategy_management_module/strategies/backtrader/strategy_base.py
+# Type: py
+
+import backtrader as bt
+
+class MyBaseStrategy(bt.Strategy):
+    params = ()
+
+    def __init__(self):
+        pass
+
+    def next(self):
+        pass
+
