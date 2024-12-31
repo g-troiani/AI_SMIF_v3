@@ -7,14 +7,14 @@ from datetime import datetime, timedelta
 import pytz
 
 from components.data_management_module.config import UnifiedConfigLoader, config
-from .alpaca_store_streamer import AlpacaStoreStreamerMock
+from .alpaca_store_streamer import AlpacaStoreStreamer
 from .zeromq_price_streamer import ZeroMQPriceStreamer
 from .live_trading_db import LiveTradingDB
 
 class LiveTradingManager:
     """
     SPRINT 3 + Enhanced:
-    - Attempts to connect to AlpacaStoreStreamerMock if use_alpaca_store = True.
+    - Attempts to connect to AlpacaStoreStreamer if use_alpaca_store = True.
     - If it fails, fallback to ZeroMQPriceStreamer.
     - Saves incoming market data to live_trading_data.db via LiveTradingDB.
     - Persists live strategy status across restarts.
