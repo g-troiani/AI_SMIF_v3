@@ -249,7 +249,10 @@ class Backtester:
 
             days = (self.end_date - self.start_date).days
             years = days / 365.0
-            cagr = ((self.final_value / initial_cash) ** (1 / years) - 1) if years > 0 else None
+            if years > 0:
+                cagr = (self.final_value / initial_cash) ** (1 / years) - 1
+            else:
+                cagr = None
 
             daily_rets = pd.Series(time_return_analysis)
             daily_rets.index = pd.to_datetime(daily_rets.index)
@@ -262,7 +265,6 @@ class Backtester:
                 sortino_ratio = (daily_rets.mean() * 252) / (downside_dev * math.sqrt(252))
             else:
                 sortino_ratio = None
-
             total_trades = trade_analysis.total.total if 'total' in trade_analysis and 'total' in trade_analysis.total else 0
             won_trades = trade_analysis.won.total if 'won' in trade_analysis and 'total' in trade_analysis.won else 0
             win_rate = (won_trades / total_trades * 100.0) if total_trades > 0 else None
@@ -277,7 +279,13 @@ class Backtester:
             combined = pd.concat([daily_rets, benchmark_daily], axis=1).dropna()
             combined.columns = ['strategy', 'benchmark']
             excess_return = combined['strategy'] - combined['benchmark']
-            information_ratio = ((excess_return.mean() * math.sqrt(252)) / (excess_return.std() * math.sqrt(252))) if excess_return.std() != 0 else None
+            if excess_return.std() != 0:
+                information_ratio = (
+                    (excess_return.mean() * math.sqrt(252))
+                    / (excess_return.std() * math.sqrt(252))
+                )
+            else:
+                information_ratio = None
 
             sharpe_ratio = sharpe_analysis.get('sharperatio', None)
             max_drawdown = drawdown_analysis['max']['drawdown']

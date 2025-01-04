@@ -265,6 +265,7 @@ def initialize_app():
     try:
         # Initialize database and seed strategies
         initialize_db()
+        add_timeframe_column()
         seed_built_in_strategies()
         
         # Ensure tickers file exists
@@ -278,6 +279,17 @@ def initialize_app():
     except Exception as e:
         logger.error(f"Error initializing application: {str(e)}")
         raise
+    
+    
+def add_timeframe_column():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    try:
+        cur.execute("ALTER TABLE strategies ADD COLUMN timeframe TEXT DEFAULT '1Min'")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # if column already exists
+    conn.close()
 
 
 @app.route('/api/positions', methods=['GET'])
@@ -756,6 +768,7 @@ def run_backtest():
     symbol = data.get('symbol')
     start_date = data.get('start_date')
     end_date = data.get('end_date')
+    timeframe     = data.get('timeframe', '1Min')  # default to 1Min if not provided
     # Optional parameters
     stop_loss = data.get('stop_loss')
     take_profit = data.get('take_profit')
@@ -952,60 +965,84 @@ def get_all_strategies():
 
 
 
-@app.route('/api/strategies/<strategy_name>', methods=['PATCH'])
-def update_strategy_mode(strategy_name):
-    """
-    Updates mode and optional fields: allocation, tickers, stop_loss, take_profit
-    """
-    payload = request.json
-    new_mode = payload.get('mode', 'backtest')
 
-    allocation = payload.get('allocation', 0.0)
-    tickers = payload.get('tickers', [])
-    stop_loss = payload.get('stop_loss', 0.0)
-    take_profit = payload.get('take_profit', 0.0)
+@app.route('/api/strategies/<string:strategy_name>', methods=['PATCH'])
+def update_strategy(strategy_name):
+    """
+    Updates mode and optional fields: allocation, tickers, stop_loss, take_profit, timeframe
+    and returns JSON that the rest of the system may expect.
+    """
+    data = request.get_json()
 
+    # Extract fields with defaults
+    new_mode   = data.get('mode', 'backtest')
+    allocation = data.get('allocation', 0.0)
+    tickers    = data.get('tickers', [])
+    timeframe  = data.get('timeframe', '1Min')
+    stop_loss  = data.get('stop_loss', 0.0)
+    take_profit= data.get('take_profit', 0.0)
+
+    # Optional mode validation
     if new_mode not in ['backtest','live']:
-        return jsonify({"success": False, "message": "Invalid mode"}), 400
+        return jsonify({
+            "success": False,
+            "message": "Invalid mode"
+        }), 400
 
     # Convert tickers array to JSON string for DB
     tickers_str = json.dumps(tickers)
 
     conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    # UPDATED: now sets the new columns too
+    cur  = conn.cursor()
+
+    # Update the row in 'strategies' table
     cur.execute('''
         UPDATE strategies
            SET mode        = ?,
                allocation  = ?,
                tickers     = ?,
                stop_loss   = ?,
-               take_profit = ?
+               take_profit = ?,
+               timeframe   = ?
          WHERE name        = ?
     ''', (
-        new_mode, 
-        allocation, 
-        tickers_str, 
-        stop_loss, 
+        new_mode,
+        allocation,
+        tickers_str,
+        stop_loss,
         take_profit,
+        timeframe,
         strategy_name
     ))
     conn.commit()
     conn.close()
 
+    # Return success JSON
     return jsonify({
         "success": True,
         "message": f"{strategy_name} updated to {new_mode}",
         "data": {
+            "mode": new_mode,
             "allocation": allocation,
-            "tickers": tickers,
+            "tickers": tickers,       # array form, not JSON-encoded
             "stop_loss": stop_loss,
-            "take_profit": take_profit
+            "take_profit": take_profit,
+            "timeframe": timeframe
         }
     })
 
 
-
+@app.route('/api/data-management/status')
+def data_management_status():
+    # example: read from a global or your data manager’s state
+    return jsonify({
+        'success': True,
+        'data': {
+            'backtestRetrieval': 'Complete',   # or real state
+            'liveRetrieval': 'Connected',      # ...
+            'streamStatus': 'Active'
+        }
+    })
 
 
 

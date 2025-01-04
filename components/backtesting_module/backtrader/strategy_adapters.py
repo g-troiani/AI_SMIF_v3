@@ -148,6 +148,34 @@ class MomentumStrategy(bt.Strategy):
                 self.buy()
         elif self.momentum[0] < 0 and self.position:
             self.close()
+            
+class VolumeToggleStrategy(bt.Strategy):
+    params = (
+        ('volume_threshold', 100),
+        ('stop_loss', None),
+        ('take_profit', None),
+    )
+
+    def __init__(self):
+        pass
+
+    def next(self):
+        current_volume = self.data.volume[0]
+        if current_volume > self.params.volume_threshold:
+            # toggle positions
+            if not self.position:
+                # open (buy)
+                entry_price = self.data.close[0]
+                if self.params.stop_loss and self.params.take_profit:
+                    stop_price = entry_price * (1.0 - self.params.stop_loss)
+                    limit_price = entry_price * (1.0 + self.params.take_profit)
+                    self.buy_bracket(price=entry_price, stopprice=stop_price, limitprice=limit_price)
+                else:
+                    self.buy()
+            else:
+                # close (sell)
+                self.sell()
+
 
 class StrategyAdapter:
     """
@@ -161,6 +189,7 @@ class StrategyAdapter:
         'BollingerBands': BollingerBandsStrategy,
         'Momentum': MomentumStrategy,
         'PAUL_RSIStrategy': PAUL_RSIStrategy,
+        'VolumeToggle': VolumeToggleStrategy,
     }
 
     @staticmethod

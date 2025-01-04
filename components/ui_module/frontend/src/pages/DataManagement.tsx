@@ -1,9 +1,14 @@
+// File: components/ui_module/frontend/src/pages/DataManagement.tsx
+// Type: tsx
+
 import React, { useState } from 'react';
 
 const DataManagement: React.FC = () => {
   const [newTicker, setNewTicker] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState<{type: 'success' | 'error', text: string} | null>(null);
+
+  // Revert to original: no /api/data-status calls, just the basic ticker addition
 
   const handleAddTicker = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -72,9 +77,21 @@ const DataManagement: React.FC = () => {
               <p className="font-medium">Never</p>
             </div>
             <div>
-              <p className="text-sm text-gray-500">Stream Status</p>
+              <p className="text-sm text-gray-500">Historical Data Retrieval</p>
+              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                Idle
+              </span>
+            </div>
+            <div>
+              <p className="text-sm text-gray-500">Live Data Retrieval</p>
               <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
                 Inactive
+              </span>
+            </div>
+            <div>
+              <p className="text-sm text-gray-500">Stream Status</p>
+              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                Offline
               </span>
             </div>
           </div>

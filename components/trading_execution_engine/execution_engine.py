@@ -6,8 +6,8 @@ import asyncio
 import threading
 import queue
 import json
-from datetime import datetime, time
-import pytz
+import time  # from code2 (explicitly added)
+from datetime import datetime  # from code2 (explicitly replaced datetime,time)
 import logging
 from typing import Optional, Dict, Any
 from .trade_signal import TradeSignal
@@ -15,11 +15,6 @@ from .order_manager import OrderManager
 from ..data_management_module.alpaca_api import AlpacaAPIClient
 from ..data_management_module.config import CONFIG
 
-# File: components/trading_execution_engine/execution_engine.py
-# Type: py
-
-# File: components/trading_execution_engine/execution_engine.py
-# Type: py
 
 class ExecutionEngine:
     """
@@ -34,21 +29,37 @@ class ExecutionEngine:
         self.signal_queue = queue.Queue()
         self.order_manager = order_manager if order_manager else OrderManager()
         self.alpaca_client = alpaca_client if alpaca_client else AlpacaAPIClient()
-        self.logger = self._setup_logging()
-        self.loop = asyncio.get_event_loop()
+
+        # From code2: replaced self.logger = self._setup_logging() with:
+        self.logger = logging.getLogger('execution_engine')
+
+        # From code2: replaced self.loop = asyncio.get_event_loop() with:
+        self.loop = asyncio.new_event_loop()
+
         self.daily_pnl = 0.0
         self.risk_config = CONFIG['risk']
-        self.recovery_interval = 300  # 5 minutes
+        self.recovery_interval = 300  # (code1 comment: was 5 minutes; code2 sets same 300)
         self.max_retries = 3
-        self.retry_delays = [2, 5, 10]  # Exponential backoff delays in seconds
+        # From code2: explicitly changed retry_delays to [2,5,10]
+        self.retry_delays = [2, 5, 10]
+
         self._active_orders: Dict[str, Dict[str, Any]] = {}
 
-        self._start_recovery_task()
+        # code1 had: self._start_recovery_task(), which code2 does not call -> removed from constructor
+        # code2 adds:
+        self.stop_event = threading.Event()
+        self._thread = None
 
-
-
+    ############################################################################
+    #  BELOW: code1 methods that code2 does NOT explicitly remove or replace   #
+    #         (we KEEP them unless code2 shows a direct removal).             #
+    ############################################################################
 
     def _setup_logging(self):
+        """
+        (From code1)
+        Sets up file-based logging. (Unused now, because code2 replaced usage with module-level logger)
+        """
         logger = logging.getLogger('execution_engine')
         logger.setLevel(logging.INFO)
         handler = logging.FileHandler(CONFIG['logging']['log_file'])
@@ -56,16 +67,14 @@ class ExecutionEngine:
         logger.addHandler(handler)
         return logger
 
-    def _run_event_loop(self):
-        """Runs the event loop for processing signals."""
-        asyncio.set_event_loop(self.loop)
-        self.loop.run_until_complete(self._process_signals())
-
     def _start_recovery_task(self):
-        """Starts the periodic recovery task for failed trades."""
+        """
+        (From code1)
+        Starts the periodic recovery task for failed trades.
+        This is never called anymore per code2, but code2 did not explicitly remove it.
+        """
         async def run_recovery():
             while not self.stop_event.is_set():
-                # If in test mode, reduce the sleep interval to quickly exit
                 interval = 0.1 if os.getenv("TEST_MODE") else self.recovery_interval
                 await asyncio.sleep(interval)
                 if self.stop_event.is_set():
@@ -77,11 +86,11 @@ class ExecutionEngine:
 
         asyncio.run_coroutine_threadsafe(run_recovery(), self.loop)
 
-    # File: components/trading_execution_engine/execution_engine.py
-    # Type: py
-
     async def _recover_failed_trades(self):
-        """Attempts to recover failed trades with retry logic."""
+        """
+        (From code1)
+        Attempts to recover failed trades with retry logic.
+        """
         try:
             failed_trades = self._get_pending_failed_trades_for_recovery()
             for trade_info in failed_trades:
@@ -91,11 +100,17 @@ class ExecutionEngine:
             self.logger.error(f"Error in recovery process: {e}")
 
     def _get_pending_failed_trades_for_recovery(self):
-        """Retrieves pending failed trades from the order manager for recovery."""
+        """
+        (From code1)
+        Retrieves pending failed trades from the order manager for recovery.
+        """
         return self.order_manager.get_pending_failed_trades(self.max_retries)
 
     async def _recover_single_failed_trade(self, trade_id, trade_signal_json, error_message, retry_count):
-        """Attempts to recover a single failed trade."""
+        """
+        (From code1)
+        Attempts to recover a single failed trade.
+        """
         self.logger.info(f"Attempting to recover failed trade {trade_id}, retry {retry_count + 1}")
         try:
             trade_signal_dict = json.loads(trade_signal_json)
@@ -119,19 +134,48 @@ class ExecutionEngine:
             if retry_count + 1 >= self.max_retries:
                 self.order_manager.update_failed_trade_status(trade_id, 'failed')
             else:
-                # Attempt to get trade_signal from locals if it was successfully created, else pass None.
                 await self.handle_failed_trade(
                     locals().get('trade_signal'),
                     str(e),
                     trade_id
                 )
         finally:
-            # Wait a brief moment before processing the next trade to avoid flooding logs.
+            # Wait a brief moment before processing the next trade
             await asyncio.sleep(1)
 
+    ############################################################################
+    #  BELOW: code2 modifies/replaces the _process_signals() from code1.       #
+    ############################################################################
+
+    def start(self):
+        """
+        (From code2)
+        Starts the ExecutionEngine in a background thread.
+        """
+        if self._thread is not None and self._thread.is_alive():
+            self.logger.info("ExecutionEngine is already running.")
+            return
+        self.logger.info("Starting ExecutionEngine in background thread.")
+        self._thread = threading.Thread(target=self._run_event_loop, daemon=True)
+        self._thread.start()
+
+    def _run_event_loop(self):
+        """
+        (From code2)
+        """
+        asyncio.set_event_loop(self.loop)
+        try:
+            self.loop.run_until_complete(self._process_signals())
+        except Exception as e:
+            self.logger.error(f"Error in event loop: {e}")
+        finally:
+            self.loop.close()
 
     async def _process_signals(self):
-        """Processes trade signals from the queue."""
+        """
+        (Replaced code1's _process_signals with code2's version)
+        Processes trade signals from the queue in an event loop, until stop_event is set.
+        """
         while not self.stop_event.is_set():
             try:
                 trade_signal = await self.loop.run_in_executor(None, self.signal_queue.get)
@@ -140,100 +184,91 @@ class ExecutionEngine:
                 await self.execute_trade_signal(trade_signal)
             except Exception as e:
                 self.logger.error(f"Error processing trade signal: {e}")
-                if isinstance(trade_signal, TradeSignal):
-                    await self.handle_failed_trade(trade_signal, str(e))
-
-    async def handle_failed_trade(self, trade_signal: TradeSignal, error_message: str,
-                                  existing_trade_id: Optional[str] = None):
-        """Handles failed trades by logging and initiating recovery process."""
-        try:
-            if existing_trade_id:
-                self.order_manager.update_failed_trade_status(
-                    existing_trade_id, 'retry', error_message
-                )
-            else:
-                self.order_manager.log_failed_trade(trade_signal, error_message)
-
-            self.logger.error(f"Trade failed: {error_message}")
-
-            order_id = self._active_orders.get(trade_signal.strategy_id)
-            if order_id:
-                try:
-                    await self.alpaca_client.cancel_order_async(order_id)
-                except Exception as e:
-                    self.logger.error(f"Error canceling failed order {order_id}: {e}")
-                finally:
-                    self._active_orders.pop(trade_signal.strategy_id, None)
-
-        except Exception as e:
-            self.logger.error(f"Error handling failed trade: {e}")
-
-    async def validate_trade_signal(self, trade_signal: TradeSignal) -> bool:
-        """Validates trade signal against risk management rules."""
-        try:
-            account_info = await self.alpaca_client.get_account_info_async()
-            portfolio_value = float(account_info['portfolio_value'])
-
-            if trade_signal.price is None and trade_signal.order_type == 'market':
-                trade_signal.price = 0.0  # Default to 0 if price not provided
-
-            validation_price = (trade_signal.limit_price if trade_signal.order_type == 'limit'
-                                else trade_signal.stop_price if trade_signal.order_type == 'stop'
-                                else trade_signal.price)
-
-            order_value = trade_signal.quantity * validation_price
-            max_position_value = portfolio_value * self.risk_config['max_position_size_pct']
-
-            if order_value > max_position_value:
-                self.logger.warning(f"Order value {order_value} exceeds maximum position size {max_position_value}")
-                return False
-
-            if order_value > self.risk_config['max_order_value']:
-                self.logger.warning(f"Order value {order_value} exceeds maximum order value {self.risk_config['max_order_value']}")
-                return False
-
-            if self.daily_pnl <= -(portfolio_value * self.risk_config['daily_loss_limit_pct']):
-                self.logger.warning("Daily loss limit reached")
-                return False
-
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Error validating trade signal: {e}")
-            return False
 
     def add_trade_signal(self, trade_signal: TradeSignal):
-        """Adds a trade signal to the processing queue."""
+        """
+        (From code2)
+        Places a new TradeSignal into the queue for async processing.
+        """
         self.signal_queue.put(trade_signal)
         self.logger.info(f"Trade signal added to queue: {trade_signal}")
 
-    def is_market_open(self) -> bool:
-        """Checks if the market is currently open."""
-        tz = pytz.timezone('America/New_York')
-        now = datetime.now(tz)
-        market_open = time(9, 30)
-        market_close = time(16, 0)
-        return market_open <= now.time() <= market_close
+    ############################################################################
+    #  BELOW: code2 replaces code1's execute_trade_signal                      #
+    ############################################################################
 
     async def execute_trade_signal(self, trade_signal: TradeSignal):
-        """Main method for executing trade signals with error handling."""
+        """
+        (From code2)
+        Checks market hours, validates the signal, and then calls execute_trade_with_recovery().
+        """
         if not self.is_market_open():
-            self.logger.warning("Market is closed. Trade signal will not be executed.")
+            self.logger.warning("Market is closed. Not executing.")
             await self.handle_failed_trade(trade_signal, "Market closed")
             return
 
         self.logger.info(f"Processing trade signal: {trade_signal}")
         try:
             if not await self.validate_trade_signal(trade_signal):
-                await self.handle_failed_trade(trade_signal, "Trade signal validation failed")
+                await self.handle_failed_trade(trade_signal, "Trade validation failed")
                 return
             await self.execute_trade_with_recovery(trade_signal)
         except Exception as e:
             self.logger.error(f"Error executing trade signal: {e}")
             await self.handle_failed_trade(trade_signal, str(e))
 
-    async def execute_trade_with_recovery(self, trade_signal: TradeSignal, is_recovery: bool = False):
-        """Executes a trade with built-in recovery mechanisms."""
+    ############################################################################
+    #  BELOW: code2 replaces code1's validate_trade_signal                     #
+    ############################################################################
+
+    async def validate_trade_signal(self, trade_signal: TradeSignal) -> bool:
+        """
+        (From code2, simpler approach)
+        Validates a trade signal vs. risk rules (max position, daily loss limit, etc.).
+        """
+        try:
+            account_info = await self.alpaca_client.get_account_info_async()
+            portfolio_value = float(account_info.get('portfolio_value', 0))
+
+            validation_price = trade_signal.price or 0.0
+            if trade_signal.order_type == 'limit':
+                validation_price = trade_signal.limit_price or 0.0
+            elif trade_signal.order_type == 'stop':
+                validation_price = trade_signal.stop_price or 0.0
+
+            order_value = trade_signal.quantity * validation_price
+            max_position_value = portfolio_value * self.risk_config['max_position_size_pct']
+
+            if order_value > max_position_value:
+                self.logger.warning(
+                    f"Order value {order_value} exceeds max position size {max_position_value}"
+                )
+                return False
+            if order_value > self.risk_config['max_order_value']:
+                self.logger.warning(
+                    f"Order value {order_value} exceeds max order value {self.risk_config['max_order_value']}"
+                )
+                return False
+
+            # daily loss limit
+            if self.daily_pnl <= -(portfolio_value * self.risk_config['daily_loss_limit_pct']):
+                self.logger.warning("Daily loss limit reached")
+                return False
+
+            return True
+        except Exception as e:
+            self.logger.error(f"Error validating trade signal: {e}")
+            return False
+
+    ############################################################################
+    #  BELOW: code2 replaces code1's execute_trade_with_recovery               #
+    ############################################################################
+
+    async def execute_trade_with_recovery(self, trade_signal: TradeSignal, is_recovery=False):
+        """
+        (From code2)
+        Tries placing the order multiple times up to self.max_retries.
+        """
         for attempt in range(self.max_retries):
             try:
                 await self.place_order(trade_signal)
@@ -248,17 +283,22 @@ class ExecutionEngine:
                 await asyncio.sleep(delay)
         return False
 
-    # File: components/trading_execution_engine/execution_engine.py
+    ############################################################################
+    #  BELOW: code2 replaces code1's place_order                               #
+    ############################################################################
 
     async def place_order(self, trade_signal: TradeSignal):
-        """Places an order with the broker."""
-        self.logger.info(f"Placing order for trade signal: {trade_signal}")
+        """
+        (From code2)
+        Places the order asynchronously using Alpaca's API, logs it, and tracks it in _active_orders.
+        """
+        self.logger.info(f"Placing order for trade_signal: {trade_signal}")
         start_time = datetime.now()
 
         order_params = {
             'symbol': trade_signal.ticker,
             'qty': trade_signal.quantity,
-            'side': trade_signal.signal_type.lower(),  # e.g. 'buy' or 'sell'
+            'side': trade_signal.signal_type.lower(),
             'type': trade_signal.order_type,
             'time_in_force': trade_signal.time_in_force,
             'client_order_id': trade_signal.strategy_id
@@ -271,12 +311,9 @@ class ExecutionEngine:
 
         try:
             order = await self.alpaca_client.place_order_async(order_params)
-            execution_time = (datetime.now() - start_time).total_seconds()
-            self.logger.info(f"Order placed successfully: {order} (execution time: {execution_time:.3f}s)")
-
-            order['is_manual'] = 1 if trade_signal.strategy_id == 'manual_trade' else 0
-            order['execution_time'] = execution_time
-            order['side'] = order_params['side']  # Ensure 'side' is recorded
+            exec_time = (datetime.now() - start_time).total_seconds()
+            self.logger.info(f"Order placed: {order} (time: {exec_time:.3f}s)")
+            order['execution_time'] = exec_time
 
             self.order_manager.add_order(order)
             self._active_orders[trade_signal.strategy_id] = order['id']
@@ -285,14 +322,20 @@ class ExecutionEngine:
             self.logger.error(f"Error placing order: {e}")
             raise
 
+    ############################################################################
+    #  BELOW: code2 replaces code1's check_order_status                        #
+    ############################################################################
 
     async def check_order_status(self, order_id: str):
-        """Monitors the status of a placed order."""
+        """
+        (From code2)
+        Checks order status up to 10 times in 5-second intervals, or until filled/cancelled.
+        """
         self.logger.info(f"Checking status for order ID: {order_id}")
         try:
-            for _ in range(10):  # Check status up to 10 times
+            for _ in range(10):
                 order = await self.alpaca_client.get_order_status_async(order_id)
-                status = order['status']
+                status = order.get('status')
                 self.logger.info(f"Order {order_id} status: {status}")
                 self.order_manager.update_order(order)
 
@@ -311,17 +354,31 @@ class ExecutionEngine:
             self.logger.error(f"Error checking order status: {e}")
             raise
 
+    ############################################################################
+    #  BELOW: code2 replaces code1's update_daily_pnl                          #
+    ############################################################################
+
     async def update_daily_pnl(self):
-        """Updates the daily P&L based on account information."""
+        """
+        (From code2)
+        Fetches account info and updates self.daily_pnl = equity - last_equity.
+        """
         try:
             account_info = await self.alpaca_client.get_account_info_async()
-            self.daily_pnl = float(account_info.get('equity')) - float(account_info.get('last_equity'))
+            self.daily_pnl = float(account_info.get('equity', 0)) - float(account_info.get('last_equity', 0))
             self.logger.info(f"Updated daily P&L: {self.daily_pnl}")
         except Exception as e:
             self.logger.error(f"Error updating daily P&L: {e}")
 
+    ############################################################################
+    #  BELOW: code1 methods that code2 does NOT explicitly remove, so we KEEP  #
+    ############################################################################
+
     async def update_portfolio(self):
-        """Updates portfolio information."""
+        """
+        (From code1; code2 never mentions or removes it explicitly.)
+        Updates portfolio information.
+        """
         self.logger.info("Updating portfolio information.")
         try:
             account_info = await self.alpaca_client.get_account_info_async()
@@ -333,7 +390,10 @@ class ExecutionEngine:
             raise
 
     async def liquidate_position(self, ticker: str):
-        """Liquidates a specific position."""
+        """
+        (From code1; code2 never mentions or removes it explicitly.)
+        Liquidates a specific position.
+        """
         self.logger.info(f"Liquidating position for {ticker}")
         try:
             position = await self.alpaca_client.get_position_async(ticker)
@@ -352,7 +412,10 @@ class ExecutionEngine:
             raise
 
     async def liquidate_all_positions(self):
-        """Liquidates all positions."""
+        """
+        (From code1; code2 never mentions or removes it explicitly.)
+        Liquidates all positions.
+        """
         self.logger.info("Liquidating all positions.")
         try:
             positions = await self.alpaca_client.get_positions_async()
@@ -392,7 +455,10 @@ class ExecutionEngine:
             raise
 
     async def cancel_all_orders(self):
-        """Cancels all pending orders."""
+        """
+        (From code1; code2 never mentions or removes it explicitly.)
+        Cancels all pending orders.
+        """
         self.logger.info("Canceling all pending orders.")
         try:
             self._active_orders.clear()
@@ -402,39 +468,35 @@ class ExecutionEngine:
             self.logger.error(f"Error canceling all orders: {e}")
             raise
 
-    async def shutdown(self):
-        """Gracefully shuts down the engine, ensuring resources are cleaned up."""
-        self.logger.info("Shutting down execution engine.")
-        # Cancel the recovery task if it exists
-        if hasattr(self, '_recovery_task') and self._recovery_task is not None:
-            self._recovery_task.cancel()
-            del self._recovery_task
+    ############################################################################
+    #  BELOW: code2 replaces code1's is_market_open()                          #
+    ############################################################################
 
-        # Run cleanup
-        await self.cleanup()
+    def is_market_open(self) -> bool:
+        """
+        (From code2)
+        A naive approach: 9:30 AM to 4:00 PM local time.
+        """
+        now = datetime.now()
+        if now.hour < 9 or (now.hour == 9 and now.minute < 30):
+            return False
+        if now.hour > 16 or (now.hour == 16 and now.minute > 0):
+            return False
+        return True
 
-        # Close the Alpaca API client session
-        await self.alpaca_client.close()
-
-        self.logger.info("Execution engine shutdown complete.")
-
-    async def shutdown(self):
-        """Gracefully shuts down the engine, ensuring resources are cleaned up."""
-        self.logger.info("Shutting down execution engine.")
-        # Cancel the recovery task if it exists
-        if hasattr(self, '_recovery_task') and self._recovery_task is not None:
-            self._recovery_task.cancel()
-
-        # Run cleanup
-        await self.cleanup()
-
-        # Close the Alpaca API client session
-        await self.alpaca_client.close()
-
-        self.logger.info("Execution engine shutdown complete.")
+    ############################################################################
+    #  BELOW: code1 had two async shutdown() definitions + cleanup().          #
+    #         code2 has a single async shutdown() that does not use cleanup(). #
+    #         => code2 explicitly REPLACES code1's shutdown.                  #
+    #         However, code2 does NOT mention removing cleanup(), so we keep it.
+    ############################################################################
 
     async def cleanup(self):
-        """Performs cleanup operations before shutdown."""
+        """
+        (From code1)
+        Performs cleanup operations before shutdown.
+        Kept because code2 never explicitly removed it, even though code2 doesn't call it.
+        """
         try:
             self.logger.info("Starting cleanup process.")
             await self.cancel_all_orders()
@@ -450,7 +512,6 @@ class ExecutionEngine:
                 except queue.Empty:
                     break
 
-            # Final status update for active orders
             final_status_updates = []
             for strategy_id, order_id in self._active_orders.items():
                 try:
@@ -468,7 +529,39 @@ class ExecutionEngine:
         finally:
             self._active_orders.clear()
 
+    ############################################################################
+    #  BELOW: code2's handle_failed_trade() and shutdown() replace code1's.    #
+    ############################################################################
 
+    def handle_failed_trade(self, trade_signal: TradeSignal, error_message: str, existing_trade_id=None):
+        """
+        (From code2)
+        Simpler handle_failed_trade that does not auto-cancel the order.
+        """
+        try:
+            if existing_trade_id:
+                self.order_manager.update_failed_trade_status(
+                    existing_trade_id, 'retry', error_message
+                )
+            else:
+                self.order_manager.log_failed_trade(trade_signal, error_message)
+            self.logger.error(f"Trade failed: {error_message}")
+        except Exception as e:
+            self.logger.error(f"Error handling failed trade: {e}")
+
+    async def shutdown(self):
+        """
+        (From code2)
+        Gracefully shuts down the engine, stopping the event loop & thread.
+        Note: Does NOT call cleanup(), code2 removed that usage.
+        """
+        self.logger.info("Shutting down execution engine.")
+        self.stop_event.set()
+        if hasattr(self, 'loop') and self.loop.is_running():
+            self.loop.call_soon_threadsafe(self.loop.stop)
+        if self._thread and self._thread.is_alive():
+            self._thread.join()
+        self.logger.info("Execution engine shutdown complete.")
 
 
 if __name__ == '__main__':
@@ -477,4 +570,6 @@ if __name__ == '__main__':
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
+        # code2 replaced code1's "execution_engine.shutdown()" call with an async shutdown,
+        # but does not explicitly remove this block, so we keep it as-is.
         execution_engine.shutdown()

@@ -1,3 +1,6 @@
+// File: components/ui_module/frontend/src/components/portfolio/RecentTrades.tsx
+// Type: tsx
+
 import React, { useState, useEffect } from 'react';
 
 interface Trade {
@@ -20,7 +23,7 @@ const RecentTrades: React.FC = () => {
       try {
         const response = await fetch('/api/recent-trades');
         const data = await response.json();
-        
+
         if (data.success) {
           setTrades(data.trades);
         } else {
@@ -72,8 +75,9 @@ const RecentTrades: React.FC = () => {
           </tr>
         </thead>
         <tbody className="bg-white divide-y divide-gray-200">
-          {trades.map((trade) => (
-            <tr key={trade.order_id} className="hover:bg-gray-50">
+          {trades.map((trade, index) => (
+            // FIX: use a more unique key by combining order_id with index (or time)
+            <tr key={`${trade.order_id}-${index}`} className="hover:bg-gray-50">
               <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-900">
                 {new Date(trade.time).toLocaleString()}
               </td>

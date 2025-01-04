@@ -1,21 +1,28 @@
+# File: components/live_trading_module/alpaca_store_streamer.py
+
 import logging
 import alpaca_trade_api as tradeapi
 import threading
 import time
 
+logger = logging.getLogger("AlpacaStoreStreamer")
+
+class BarData:
+    def __init__(self, symbol, close, datetime):
+        self.symbol = symbol
+        self.close = [close]  # to mimic backtrader bar structure
+        self.datetime = [datetime]
 
 class AlpacaStoreStreamer:
     """
-    Connects to Alpaca's real-time data feed.
-    If an error occurs mid-run, it calls on_error_callback to handle fallback or reconnection.
+    Connects to Alpaca's real-time data feed at a chosen timeframe. 
+    If an error occurs mid-run, it calls on_error_callback or tries reconnect.
     """
 
-    def __init__(self, symbols, key_id, secret_key, base_url, on_bar_callback, on_error_callback=None):
-        self.logger = logging.getLogger("AlpacaStoreStreamer")
+    def __init__(self, symbols, timeframe, on_bar_callback, on_error_callback=None):
+        self.logger = logger
         self.symbols = symbols
-        self.api_key = key_id
-        self.api_secret = secret_key
-        self.base_url = base_url
+        self.timeframe = timeframe
         self.on_bar_callback = on_bar_callback
         self.on_error_callback = on_error_callback
         self._running = False
@@ -23,19 +30,19 @@ class AlpacaStoreStreamer:
         self._thread = None
         self._reconnection_attempts = 0
         self._max_reconnection_attempts = 5
-        self._reconnect_delay = 5  # seconds
+        self._reconnect_delay = 5
 
     def start(self):
-        self.logger.info("Starting AlpacaStoreStreamer with real-time feed")
+        self.logger.info(f"Starting AlpacaStoreStreamer with timeframe={self.timeframe} for symbols={self.symbols}")
         self._running = True
         self._start_stream()
 
     def _start_stream(self):
         try:
             self.stream = tradeapi.Stream(
-                key_id=self.api_key,
-                secret_key=self.api_secret,
-                base_url=self.base_url,
+                key_id='...',  # replaced by env
+                secret_key='...', 
+                base_url='https://paper-api.alpaca.markets',
                 data_feed='sip'
             )
             for symbol in self.symbols:
@@ -43,7 +50,6 @@ class AlpacaStoreStreamer:
 
             self._thread = threading.Thread(target=self._run_stream, daemon=True)
             self._thread.start()
-
         except Exception as e:
             self.logger.error(f"Alpaca streamer exception at start: {e}")
             self._try_reconnect(e)
@@ -53,15 +59,20 @@ class AlpacaStoreStreamer:
             self.logger.info("Alpaca streamer thread running")
             self.stream.run()
         except Exception as e:
-            self.logger.error(f"Alpaca streamer run-time exception: {e}")
+            self.logger.error(f"Alpaca streamer runtime exception: {e}")
             if self._running:
                 self._try_reconnect(e)
 
     def _handle_incoming_bar(self, bar):
         if not self._running:
             return
-        symbol = bar.symbol
-        self.on_bar_callback(symbol, bar)
+        # create a BarData object
+        bar_data = BarData(
+            symbol=bar.symbol,
+            close=bar.close,
+            datetime=bar.timestamp
+        )
+        self.on_bar_callback(bar_data)
 
     def _try_reconnect(self, exc):
         self._reconnection_attempts += 1
@@ -70,8 +81,7 @@ class AlpacaStoreStreamer:
             if self.on_error_callback:
                 self.on_error_callback(exc)
             return
-
-        self.logger.warning(f"Attempting to reconnect in {self._reconnect_delay} seconds... (attempt {self._reconnection_attempts})")
+        self.logger.warning(f"Attempting to reconnect in {self._reconnect_delay}s (attempt {self._reconnection_attempts})")
         time.sleep(self._reconnect_delay)
         if not self._running:
             return

@@ -1,15 +1,17 @@
-// File: components/ui_module/frontend/src/pages/Strategy.tsx
+// File: components/strategy_management_module/strategies/Strategy.tsx
+// (Or wherever your "Strategy.tsx" currently resides.)
+
 import React, { useEffect, useState } from 'react';
 import NewStrategyModal from '../components/NewStrategyModal';
 
-// For storing the numeric fields in the main data
 interface StrategyItem {
   name: string;
-  mode: 'backtest' | 'live';
-  allocation: number;    // e.g. 1234.56 means $1,234.56
-  stop_loss: number;     // e.g. 0.05 => 5%
-  take_profit: number;   // e.g. 0.1 => 10%
-  tickers: string;       // plain text
+  mode: 'live' | 'backtest';
+  allocation: number; 
+  stop_loss: number;
+  take_profit: number;
+  tickers: string;    
+  timeframe: string;  
 }
 
 function parseCurrency(str: string): number {
@@ -20,6 +22,8 @@ function formatCurrency(val: number): string {
   return val.toLocaleString('en-US', {
     style: 'currency',
     currency: 'USD',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
   });
 }
 
@@ -36,12 +40,10 @@ const Strategy: React.FC = () => {
   const [strategies, setStrategies] = useState<StrategyItem[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  // --- Local ephemeral states for user-typing text (indexed by strategy row) ---
-  // We store each numeric input’s typed text, so we can let the user type freely,
-  // then parse/format on blur.
   const [localAllocations, setLocalAllocations] = useState<string[]>([]);
   const [localStopLosses, setLocalStopLosses] = useState<string[]>([]);
   const [localTakeProfits, setLocalTakeProfits] = useState<string[]>([]);
+  const [localTimeframes, setLocalTimeframes] = useState<string[]>([]);
 
   useEffect(() => {
     fetch('/api/strategies')
@@ -52,28 +54,21 @@ const Strategy: React.FC = () => {
           return;
         }
 
-        // Convert backend data to numeric fields
         const loaded: StrategyItem[] = data.data.map((s: any) => ({
           name: s.name,
           mode: s.mode,
           allocation: s.allocation ? parseFloat(s.allocation) : 0,
           stop_loss: s.stop_loss ? parseFloat(s.stop_loss) : 0,
           take_profit: s.take_profit ? parseFloat(s.take_profit) : 0,
-          tickers: s.tickers || '',
+          tickers: Array.isArray(s.tickers) ? s.tickers.join(',') : s.tickers || '',
+          timeframe: s.timeframe || '1Min',
         }));
-
         setStrategies(loaded);
 
-        // Initialize ephemeral text states with a formatted string
-        setLocalAllocations(
-          loaded.map((st) => formatCurrency(st.allocation))
-        );
-        setLocalStopLosses(
-          loaded.map((st) => formatPercent(st.stop_loss))
-        );
-        setLocalTakeProfits(
-          loaded.map((st) => formatPercent(st.take_profit))
-        );
+        setLocalAllocations(loaded.map((st) => formatCurrency(st.allocation)));
+        setLocalStopLosses(loaded.map((st) => formatPercent(st.stop_loss)));
+        setLocalTakeProfits(loaded.map((st) => formatPercent(st.take_profit)));
+        setLocalTimeframes(loaded.map((st) => st.timeframe));
       })
       .catch((err) => {
         setError('Error fetching strategies');
@@ -81,7 +76,6 @@ const Strategy: React.FC = () => {
       });
   }, []);
 
-  // Handler for Tickers can remain in the main strategies array
   const handleTickersChange = (index: number, newVal: string) => {
     setStrategies((prev) => {
       const copy = [...prev];
@@ -90,9 +84,8 @@ const Strategy: React.FC = () => {
     });
   };
 
-  // ========== ALLOCATION INPUTS ==========
+  // ----- Allocation handlers -----
   const handleAllocationChange = (index: number, newText: string) => {
-    // user is typing text freely
     setLocalAllocations((prev) => {
       const copy = [...prev];
       copy[index] = newText;
@@ -100,14 +93,12 @@ const Strategy: React.FC = () => {
     });
   };
   const handleAllocationBlur = (index: number) => {
-    // parse typed => numeric => store in strategies
     const rawNum = parseCurrency(localAllocations[index]);
     setStrategies((prev) => {
       const copy = [...prev];
       copy[index].allocation = rawNum;
       return copy;
     });
-    // also reformat ephemeral text
     setLocalAllocations((prev) => {
       const copy = [...prev];
       copy[index] = formatCurrency(rawNum);
@@ -115,7 +106,6 @@ const Strategy: React.FC = () => {
     });
   };
   const handleAllocationFocus = (index: number) => {
-    // On focus, show plain numeric to user
     const rawNum = parseCurrency(localAllocations[index]);
     setLocalAllocations((prev) => {
       const copy = [...prev];
@@ -124,7 +114,7 @@ const Strategy: React.FC = () => {
     });
   };
 
-  // ========== STOP LOSS INPUTS ==========
+  // ----- Stop Loss handlers -----
   const handleStopLossChange = (index: number, newText: string) => {
     setLocalStopLosses((prev) => {
       const copy = [...prev];
@@ -154,7 +144,7 @@ const Strategy: React.FC = () => {
     });
   };
 
-  // ========== TAKE PROFIT INPUTS ==========
+  // ----- Take Profit handlers -----
   const handleTakeProfitChange = (index: number, newText: string) => {
     setLocalTakeProfits((prev) => {
       const copy = [...prev];
@@ -184,10 +174,27 @@ const Strategy: React.FC = () => {
     });
   };
 
-  // Toggle mode => PATCH request
+  // ----- Timeframe handlers -----
+  const handleTimeframeChange = (index: number, newVal: string) => {
+    setLocalTimeframes((prev) => {
+      const copy = [...prev];
+      copy[index] = newVal;
+      return copy;
+    });
+    setStrategies((prev) => {
+      const copy = [...prev];
+      copy[index].timeframe = newVal;
+      return copy;
+    });
+  };
+
+  // ----- Toggle mode -----
   const handleToggleMode = (index: number) => {
     const strat = strategies[index];
-    const newMode = strat.mode === 'backtest' ? 'live' : 'backtest';
+    const newMode = strat.mode === 'live' ? 'backtest' : 'live';
+
+    // Add client‐side logging around the fetch request
+    console.log('[Toggle Mode] Sending PATCH request for strategy:', strat.name);
 
     fetch(`/api/strategies/${strat.name}`, {
       method: 'PATCH',
@@ -197,25 +204,28 @@ const Strategy: React.FC = () => {
         allocation: strat.allocation,
         stop_loss: strat.stop_loss,
         take_profit: strat.take_profit,
-        tickers: strat.tickers,
+        tickers: strat.tickers.split(',').map(s => s.trim()),
+        timeframe: strat.timeframe
       }),
     })
-      .then((res) => res.json())
+      .then((res) => {
+        console.log('[Toggle Mode] Received status:', res.status);
+        return res.json();
+      })
       .then((data) => {
+        console.log('[Toggle Mode] Response payload:', data);
         if (!data.success) {
           setError(data.message || 'Failed to update strategy');
           return;
         }
-        // locally update mode
         setStrategies((prev) => {
           const copy = [...prev];
-          copy[index] = { ...copy[index], mode: newMode };
+          copy[index].mode = newMode;
           return copy;
         });
       })
       .catch((err) => {
-        setError('Network error updating strategy mode');
-        console.error(err);
+        setError(`Network error updating strategy mode: ${err}`);
       });
   };
 
@@ -235,8 +245,6 @@ const Strategy: React.FC = () => {
 
       {error && <div className="text-red-600">{error}</div>}
 
-      <div className="hidden">Modal state: {isModalOpen ? 'open' : 'closed'}</div>
-
       <NewStrategyModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
@@ -254,10 +262,11 @@ const Strategy: React.FC = () => {
               {strategies.map((strat, i) => (
                 <li key={strat.name} className="bg-gray-50 p-3 rounded">
                   <div className="grid grid-cols-1 gap-2">
-                    <div className="text-lg font-semibold">
-                      {strat.name}
-                    </div>
-                    <div className="grid grid-cols-5 items-center gap-4">
+                    {/* Show the strategy name.  */}
+                    <div className="text-lg font-semibold">{strat.name}</div>
+
+                    {/* Row with Allocation, StopLoss, TP, Tickers, Timeframe, Toggle */}
+                    <div className="grid grid-cols-6 items-center gap-4">
                       {/* Allocation */}
                       <div className="flex items-center space-x-2">
                         <label className="whitespace-nowrap">Allocation:</label>
@@ -317,20 +326,45 @@ const Strategy: React.FC = () => {
                         />
                       </div>
 
+                      {/* Timeframe */}
+                      <div className="flex items-center space-x-2">
+                        <label className="whitespace-nowrap">Timeframe:</label>
+                        <select
+                          className="border px-1 py-1"
+                          value={localTimeframes[i]}
+                          onChange={(e) => handleTimeframeChange(i, e.target.value)}
+                        >
+                          <option value="1Min">1Min</option>
+                          <option value="5Min">5Min</option>
+                          <option value="15Min">15Min</option>
+                          <option value="1Hour">1Hour</option>
+                          <option value="1Day">1Day</option>
+                        </select>
+                      </div>
+
                       {/* Toggle Mode */}
                       <div className="justify-self-end">
-                        <button
-                          className={`px-3 py-1 rounded-md ${
-                            strat.mode === 'live'
-                              ? 'bg-green-600 text-white'
-                              : 'bg-gray-300 text-black'
-                          }`}
-                          onClick={() => handleToggleMode(i)}
-                        >
-                          {strat.mode === 'live'
-                            ? 'Switch to Backtest'
-                            : 'Switch to Live'}
-                        </button>
+                        {strat.mode === 'live' ? (
+                          <button
+                            className="px-3 py-1 rounded-md bg-green-600 text-white"
+                            onClick={() => handleToggleMode(i)}
+                          >
+                            LIVE
+                            <span className="ml-2 text-sm font-medium">
+                              Switch to Backtest
+                            </span>
+                          </button>
+                        ) : (
+                          <button
+                            className="px-3 py-1 rounded-md bg-gray-300 text-black"
+                            onClick={() => handleToggleMode(i)}
+                          >
+                            BACKTEST
+                            <span className="ml-2 text-sm font-medium">
+                              Switch to Live
+                            </span>
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>

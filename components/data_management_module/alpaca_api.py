@@ -21,6 +21,9 @@ import asyncio
 # For the new asynchronous class:
 from .config import CONFIG  # The unified config dictionary (as in old async code)
 
+# Added from code2:
+logger = logging.getLogger(__name__)
+
 
 class AlpacaAPIClient:
     """
@@ -29,18 +32,23 @@ class AlpacaAPIClient:
     """
 
     def __init__(self):
+        # Use the existing setup_logging approach from code1
         self.logger = self._setup_logging()
-        self.base_url = config.get('api', 'base_url')
+
+        # Incorporate fallback defaults from code2 for base_url, key_id, secret_key
+        self.base_url = config.get('api', 'base_url', 'https://data.alpaca.markets/v2')
         self.headers = {
-            'APCA-API-KEY-ID': config.get('api', 'key_id'),
-            'APCA-API-SECRET-KEY': config.get('api', 'secret_key')
+            'APCA-API-KEY-ID': config.get('api', 'key_id', ''),
+            'APCA-API-SECRET-KEY': config.get('api', 'secret_key', '')
         }
-        # Instantiate the REST API client
+
+        # Instantiate the REST API client with fallback defaults
         self.api = REST(
-            key_id=config.get('api', 'key_id'),
-            secret_key=config.get('api', 'secret_key'),
-            base_url=config.get('api', 'base_url')
+            key_id=config.get('api', 'key_id', ''),
+            secret_key=config.get('api', 'secret_key', ''),
+            base_url=config.get('api', 'base_url', 'https://data.alpaca.markets/v2')
         )
+
         # Rate limiting settings
         self.retry_count = config.get_int('api', 'rate_limit_retry_attempts')
         self.retry_delay = config.get_int('api', 'rate_limit_retry_wait')

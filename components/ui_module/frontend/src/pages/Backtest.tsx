@@ -24,10 +24,8 @@ const Backtest: React.FC = () => {
   const [plotUrl, setPlotUrl] = useState<string | null>(null);
   const [backtestResults, setBacktestResults] = useState<BacktestMetrics[]>([]);
 
-  // If you have an API endpoint that returns a list of previous backtests, you can fetch it here
-  // If not, you can comment out this useEffect until you have that endpoint implemented.
+  // If you have an API endpoint returning previous backtests, we fetch it
   useEffect(() => {
-    // Example: If you have /api/backtests returning { success: boolean, results: BacktestMetrics[] }
     fetch('/api/backtests')
       .then((res) => res.json())
       .then((data) => {
@@ -43,7 +41,7 @@ const Backtest: React.FC = () => {
   const handleBacktestComplete = (url?: string, metrics?: BacktestMetrics) => {
     if (url) setPlotUrl(url);
 
-    // If you want to re-fetch results after a backtest is completed:
+    // Re-fetch results after a backtest is completed
     fetch('/api/backtests')
       .then((res) => res.json())
       .then((data) => {
@@ -55,9 +53,9 @@ const Backtest: React.FC = () => {
         console.error('Error fetching backtests after completion:', error);
       });
 
-    // If you don't have an /api/backtests endpoint, just append the metrics to local state:
+    // Optionally, if no `/api/backtests`, we could push metrics to local state
     // if (metrics) {
-    //   setBacktestResults(prev => [...prev, metrics]);
+    //   setBacktestResults((prev) => [...prev, metrics]);
     // }
   };
 
@@ -116,7 +114,11 @@ const Backtest: React.FC = () => {
       {plotUrl && (
         <div>
           <h3 className="text-lg font-medium text-gray-900 mb-4">Backtest Chart</h3>
-          <img src={plotUrl} alt="Backtest Plot" className="border rounded shadow-lg max-w-full" />
+          <img
+            src={plotUrl}
+            alt="Backtest Plot"
+            className="border rounded shadow-lg max-w-full"
+          />
         </div>
       )}
 
@@ -149,16 +151,42 @@ const Backtest: React.FC = () => {
                 <td className="px-4 py-2">{res.ticker}</td>
                 <td className="px-4 py-2">{res.start_date}</td>
                 <td className="px-4 py-2">{res.end_date}</td>
-                <td className="px-4 py-2">{(res.cagr * 100).toFixed(2)}%</td>
-                <td className="px-4 py-2">{res.total_return_pct.toFixed(2)}%</td>
-                <td className="px-4 py-2">{res.std_dev !== null ? res.std_dev.toFixed(4) : 'N/A'}</td>
-                <td className="px-4 py-2">{res.annual_vol !== null ? res.annual_vol.toFixed(4) : 'N/A'}</td>
-                <td className="px-4 py-2">{res.sharpe_ratio !== null ? res.sharpe_ratio.toFixed(2) : 'N/A'}</td>
-                <td className="px-4 py-2">{res.sortino_ratio !== null ? res.sortino_ratio.toFixed(2) : 'N/A'}</td>
-                <td className="px-4 py-2">{res.max_drawdown !== null ? `${res.max_drawdown.toFixed(2)}%` : 'N/A'}</td>
-                <td className="px-4 py-2">{res.win_rate !== null ? `${res.win_rate.toFixed(2)}%` : 'N/A'}</td>
-                <td className="px-4 py-2">{res.num_trades !== null ? res.num_trades : 'N/A'}</td>
-                <td className="px-4 py-2">{res.information_ratio !== null ? res.information_ratio.toFixed(2) : 'N/A'}</td>
+                <td className="px-4 py-2">
+                  {(res.cagr * 100).toFixed(2)}%
+                </td>
+                <td className="px-4 py-2">
+                  {res.total_return_pct.toFixed(2)}%
+                </td>
+                <td className="px-4 py-2">
+                  {res.std_dev !== null ? res.std_dev.toFixed(4) : 'N/A'}
+                </td>
+                <td className="px-4 py-2">
+                  {res.annual_vol !== null ? res.annual_vol.toFixed(4) : 'N/A'}
+                </td>
+                <td className="px-4 py-2">
+                  {res.sharpe_ratio !== null ? res.sharpe_ratio.toFixed(2) : 'N/A'}
+                </td>
+                <td className="px-4 py-2">
+                  {res.sortino_ratio !== null ? res.sortino_ratio.toFixed(2) : 'N/A'}
+                </td>
+                <td className="px-4 py-2">
+                  {res.max_drawdown !== null
+                    ? `${res.max_drawdown.toFixed(2)}%`
+                    : 'N/A'}
+                </td>
+                <td className="px-4 py-2">
+                  {res.win_rate !== null
+                    ? `${res.win_rate.toFixed(2)}%`
+                    : 'N/A'}
+                </td>
+                <td className="px-4 py-2">
+                  {res.num_trades !== null ? res.num_trades : 'N/A'}
+                </td>
+                <td className="px-4 py-2">
+                  {res.information_ratio !== null
+                    ? res.information_ratio.toFixed(2)
+                    : 'N/A'}
+                </td>
                 <td className="px-4 py-2">{res.strategy_unique_id}</td>
               </tr>
             ))}

@@ -5,7 +5,7 @@ import backtrader as bt
 
 class BenchmarkStrategy(bt.Strategy):
     """
-    Simple buy and hold strategy for benchmark comparison.
+    Simple buy and hold strategy fo benchmark comparison.
     Now includes stop_loss and take_profit.
     """
     params = (

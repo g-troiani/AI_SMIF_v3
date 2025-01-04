@@ -1,13 +1,13 @@
 # File: components/data_management_module/config.py
-# 
+
 # Unified configuration file combining both the original data_management_module/config.py 
 # and the trading_execution_engine/config.py into a single module.
-# 
+
 # This single config.py now provides:
 #   1) The DataConfig class for data & environment-based settings (database paths, logging, etc.).
 #   2) The additional Alpaca, risk, and logging configuration previously in the trading_execution_engine.
 #   3) The UnifiedConfigLoader class for backtest/live usage helper methods.
-#
+
 # The result is one unified configuration file in data_management_module that the entire codebase can rely on,
 # ensuring no duplication of config logic and preserving existing functionality.
 
@@ -48,6 +48,9 @@ class DataConfig:
         # Step 3: incorporate the logic from the old trading_execution_engine config
         #         (Alpaca credentials, risk management, etc.)
         self._load_additional_alpaca_and_risk_settings()
+
+        # Keep everything else intact, then add aggregator/timeframe references
+        # We do not break existing logic
 
     def _define_defaults(self):
         """
@@ -140,8 +143,6 @@ class DataConfig:
         )
 
         # Execution engine log file path
-        # The old code used LOG_FILE = 'logs/execution_engine.log'
-        # We'll unify it. If an environment var is set, use that; else fallback:
         self.execution_engine_log_file = os.getenv('EXECUTION_ENGINE_LOG_FILE',
                                                    str(Path('logs') / 'execution_engine.log'))
 
@@ -183,6 +184,21 @@ class DataConfig:
 
     def items(self, section):
         return self.config.items(section)
+
+    # Additional optional methods for aggregator/timeframe (from code2)
+    def get_live_timeframe(self, default='1Min'):
+        """
+        Returns a default timeframe to use if not specified by a strategy.
+        """
+        val = os.getenv('LIVE_TRADING_TIMEFRAME', default)
+        return val
+
+    def enable_aggregator(self):
+        """
+        Determines if aggregator is enabled for multiple timeframes.
+        """
+        val = os.getenv('ENABLE_AGGREGATOR', 'False').lower()
+        return val in ['true', '1', 'yes']
 
 
 # Instantiate a single global config instance

@@ -7,3 +7,4 @@ from .momentum import MomentumStrategy
 from .moving_average_crossover import MovingAverageCrossoverStrategy
 from .rsi import RSIStrategy
 from .bollinger_bands import BollingerBandsStrategy
+from .volume_toggle_strategy import VolumeToggleStrategy

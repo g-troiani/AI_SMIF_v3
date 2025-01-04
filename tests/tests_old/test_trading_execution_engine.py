@@ -47,7 +47,7 @@ def mock_config():
 
 from components.trading_execution_engine.execution_engine import ExecutionEngine
 from components.trading_execution_engine.trade_signal import TradeSignal
-from components.trading_execution_engine.alpaca_api import AlpacaAPIClient
+from components.data_management_module.alpaca_api import AlpacaAPIClient
 from components.trading_execution_engine.order_manager import OrderManager
 
 @pytest.fixture

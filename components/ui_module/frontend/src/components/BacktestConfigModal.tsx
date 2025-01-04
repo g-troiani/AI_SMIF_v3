@@ -21,7 +21,8 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
       end: '16:00'
     },
     stopLoss: '',
-    takeProfit: ''
+    takeProfit: '',
+    timeframe: '1Min'  // <-- ADDED: default timeframe for the backtest
   });
 
   const [isRunning, setIsRunning] = useState(false);
@@ -51,7 +52,8 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
       start_date: formData.dateRange.start,
       end_date: formData.dateRange.end,
       stop_loss: formData.stopLoss ? parseFloat(formData.stopLoss) : null,
-      take_profit: formData.takeProfit ? parseFloat(formData.takeProfit) : null
+      take_profit: formData.takeProfit ? parseFloat(formData.takeProfit) : null,
+      timeframe: formData.timeframe // <-- ADDED to payload
     };
 
     fetch('/api/backtest/run', {
@@ -126,13 +128,59 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
             </div>
           </div>
 
+          {/* Timeframe Dropdown */}
+          <div className="grid grid-cols-2 gap-6">
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Timeframe</label>
+              <select
+                value={formData.timeframe}
+                onChange={e => setFormData({ ...formData, timeframe: e.target.value })}
+                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+              >
+                <option value="1Min">1 Minute</option>
+                <option value="5Min">5 Minutes</option>
+                <option value="15Min">15 Minutes</option>
+                <option value="1Hour">1 Hour</option>
+                <option value="1Day">1 Day</option>
+              </select>
+            </div>
+            {/* Trading Hours (currently unused in backtest, but we keep it) */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Trading Hours</label>
+              <div className="flex space-x-2">
+                <input
+                  type="time"
+                  value={formData.tradingHours.start}
+                  onChange={e => setFormData({
+                    ...formData,
+                    tradingHours: { ...formData.tradingHours, start: e.target.value }
+                  })}
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+                />
+                <input
+                  type="time"
+                  value={formData.tradingHours.end}
+                  onChange={e => setFormData({
+                    ...formData,
+                    tradingHours: { ...formData.tradingHours, end: e.target.value }
+                  })}
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Date Range */}
           <div className="grid grid-cols-2 gap-6">
             <div>
               <label className="block text-sm font-medium text-gray-700">Start Date</label>
               <input
                 type="date"
                 value={formData.dateRange.start}
-                onChange={e => setFormData({ ...formData, dateRange: { ...formData.dateRange, start: e.target.value } })}
+                onChange={e => setFormData({ 
+                  ...formData, 
+                  dateRange: { ...formData.dateRange, start: e.target.value } 
+                })}
                 className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
               />
             </div>
@@ -141,12 +189,16 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
               <input
                 type="date"
                 value={formData.dateRange.end}
-                onChange={e => setFormData({ ...formData, dateRange: { ...formData.dateRange, end: e.target.value } })}
+                onChange={e => setFormData({ 
+                  ...formData, 
+                  dateRange: { ...formData.dateRange, end: e.target.value } 
+                })}
                 className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
               />
             </div>
           </div>
 
+          {/* Stop Loss & Take Profit */}
           <div className="grid grid-cols-2 gap-6">
             <div>
               <label className="block text-sm font-medium text-gray-700">Stop Loss (%)</label>
@@ -170,6 +222,7 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
             </div>
           </div>
 
+          {/* Buttons */}
           <div className="flex justify-end space-x-4 pt-4">
             <button
               type="button"
@@ -182,7 +235,9 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
             <button
               type="button"
               onClick={handleRunBacktest}
-              className={`px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white ${isRunning ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}`}
+              className={`px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white ${
+                isRunning ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'
+              }`}
               disabled={isRunning}
             >
               {isRunning ? 'Running...' : 'Run Backtest'}
