@@ -1,0 +1,52 @@
+# components/reporting_analytics_module/templates/report_template.html
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ title }}</title>
+</head>
+<body>
+    <h1>{{ title }}</h1>
+    <div class="metrics-section">
+        <h2>Performance Metrics</h2>
+        <ul>
+        {% for metric in performance_metrics %}
+            <li>{{ metric.label }}: {{ metric.value }}{{ metric.unit if metric.unit else ''}}</li>
+        {% endfor %}
+        </ul>
+    </div>
+    {% if risk_metrics %}
+    <div class="metrics-section">
+        <h2>Risk Metrics</h2>
+        <ul>
+        {% for metric in risk_metrics %}
+            <li>{{ metric.label }}: {{ metric.value }}</li>
+        {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+    {% if trades is not none and trades.shape[0] > 0 %}
+    <div class="trades-section">
+        <h2>Trades</h2>
+        <table class="trades-table">
+            <tr>
+                <th>Date</th>
+                <th>Ticker</th>
+                <th>Action</th>
+                <th>Quantity</th>
+                <th>Price</th>
+            </tr>
+            {% for idx, trade in trades.iterrows() %}
+            <tr>
+                <td>{{ trade.timestamp }}</td>
+                <td>{{ trade.ticker }}</td>
+                <td>{{ trade.action }}</td>
+                <td>{{ trade.quantity }}</td>
+                <td>{{ trade.price }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
+    {% endif %}
+</body>
+</html>
