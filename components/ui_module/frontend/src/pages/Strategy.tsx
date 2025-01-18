@@ -61,7 +61,7 @@ const Strategy: React.FC = () => {
           stop_loss: s.stop_loss ? parseFloat(s.stop_loss) : 0,
           take_profit: s.take_profit ? parseFloat(s.take_profit) : 0,
           tickers: Array.isArray(s.tickers) ? s.tickers.join(',') : s.tickers || '',
-          timeframe: s.timeframe || '1Min',
+          timeframe: '5Min' //s.timeframe || '1Min',
         }));
         setStrategies(loaded);
 

@@ -802,7 +802,6 @@ def get_available_strategies():
 # Still in your app.py #
 ########################
 
-# Existing code ...
 plots_dir = os.path.join(project_root, 'plots')
 
 @app.route('/plots/<path:filename>')
@@ -1045,10 +1044,8 @@ def get_all_strategies():
 
 @app.route('/api/strategies/<string:strategy_name>', methods=['PATCH'])
 def update_strategy(strategy_name):
-    """
-    Updates mode and optional fields: allocation, tickers, stop_loss, take_profit, timeframe
-    and returns JSON that the rest of the system may expect.
-    """
+    logger.warning(f"[DEBUG] PATCH /api/strategies/{strategy_name} called, raw JSON={request.get_json()}")
+
     data = request.get_json()
 
     # Extract fields with defaults
@@ -1059,20 +1056,16 @@ def update_strategy(strategy_name):
     stop_loss  = data.get('stop_loss', 0.0)
     take_profit= data.get('take_profit', 0.0)
 
-    # Optional mode validation
     if new_mode not in ['backtest','live']:
         return jsonify({
             "success": False,
             "message": "Invalid mode"
         }), 400
 
-    # Convert tickers array to JSON string for DB
     tickers_str = json.dumps(tickers)
 
     conn = sqlite3.connect(DB_PATH)
     cur  = conn.cursor()
-
-    # Update the row in 'strategies' table
     cur.execute('''
         UPDATE strategies
            SET mode        = ?,
@@ -1094,14 +1087,33 @@ def update_strategy(strategy_name):
     conn.commit()
     conn.close()
 
-    # Return success JSON
+    # -------------------------------------------------------------
+    # 1) Instantiate your StrategyManager
+    # 2) Call the manager's .change_strategy_mode
+    # 3) Log the debug message
+    # -------------------------------------------------------------
+    from components.strategy_management_module.strategy_manager import StrategyManager
+    manager = StrategyManager()
+    success = manager.change_strategy_mode(
+        strat_name=strategy_name,
+        new_mode=new_mode,
+        params={
+            'allocation': allocation,
+            'tickers':   tickers,
+            'stop_loss': stop_loss,
+            'take_profit': take_profit,
+            'timeframe': timeframe
+        }
+    )
+    logger.warning(f"[DEBUG] Called strategy_manager.change_strategy_mode => success={success}")
+
     return jsonify({
         "success": True,
         "message": f"{strategy_name} updated to {new_mode}",
         "data": {
             "mode": new_mode,
             "allocation": allocation,
-            "tickers": tickers,       # array form, not JSON-encoded
+            "tickers": tickers,
             "stop_loss": stop_loss,
             "take_profit": take_profit,
             "timeframe": timeframe

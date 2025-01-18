@@ -152,15 +152,18 @@ class StrategyManager:
         """
         Start or ensure we have a live manager for the given strategy
         """
+        self.logger.warning(f"[DEBUG] _run_live_pipeline called for {strat_name}")
         if strat_name in self.live_managers:
             self.logger.info(f"Strategy {strat_name} is already running in live mode.")
             return
-        # Otherwise create a LiveTradingManager
+
         self.logger.info(f"Starting live trading manager for {strat_name}.")
-        manager = LiveTradingManager(strat_name=strat_name)
-        manager.start(force_live=True) # manager.start()
+        # FIX: pass `strategy_name` instead of `strat_name`
+        manager = LiveTradingManager(strategy_name=strat_name)
+        manager.start(force_live=True)
         self.live_managers[strat_name] = manager
 
+        
     def _stop_live_pipeline(self, strat_name: str):
         """
         Stop the live manager if it exists
@@ -200,6 +203,7 @@ class StrategyManager:
             self._stop_live_pipeline(strat_name)
         # If switching from backtest -> live, run live
         elif old_mode != 'live' and new_mode == 'live':
+            self.logger.warning("[DEBUG] change_strategy_mode: about to run live pipeline for %s", strat_name)
             self._run_live_pipeline(strat_name)
 
         self.logger.info(f"Strategy {strat_name} changed from {old_mode} to {new_mode} in DB & memory.")

@@ -61,6 +61,8 @@ class VolumeToggleStrategy(StrategyBase):
 
         Returns a TradeSignal if an action is taken, otherwise None.
         """
+        print(f"[DEBUG] VolumeToggleStrategy.on_bar => bar.volume={bar.volume}")
+
         threshold = self.params.get('volume_threshold', 100)
 
         if bar.volume > threshold:

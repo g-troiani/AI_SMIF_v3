@@ -380,15 +380,39 @@ class StrategyAdapter:
     """
 
     # This dictionary helps if we want to do direct: StrategyAdapter.STRATEGIES['RSI'] in backtest
-    STRATEGIES = {
-        'MovingAverageCrossover': MovingAverageCrossoverStrategy,
-        'RSI': RSIStrategy,
-        'MACD': MACDStrategy,
-        'BollingerBands': BollingerBandsStrategy,
-        'Momentum': MomentumStrategy
-        'VolumeToggleStrategy': VolumeToggleStrategy,
-
-    }
+    class StrategyAdapter:
+        """
+        Manages both backtrader-based and python-based strategies.
+        'type' key -> 'backtrader' or 'python'.
+        """
+        
+        STRATEGIES = {
+            'MovingAverageCrossover': {
+                'class': MovingAverageCrossoverStrategy,
+                'type': 'backtrader'
+            },
+            'RSI': {
+                'class': RSIStrategy,
+                'type': 'backtrader'
+            },
+            'MACD': {
+                'class': MACDStrategy,
+                'type': 'backtrader'
+            },
+            'BollingerBands': {
+                'class': BollingerBandsStrategy,
+                'type': 'backtrader'
+            },
+            'Momentum': {
+                'class': MomentumStrategy,
+                'type': 'backtrader'
+            },
+            # pure python example
+            'VolumeToggleStrategy': {
+                'class': VolumeToggleStrategy,
+                'type': 'python'
+            },
+        }
 
     @staticmethod
     def get_strategy(name):
@@ -398,6 +422,26 @@ class StrategyAdapter:
                 f"Available: {list(StrategyAdapter.STRATEGIES.keys())}"
             )
         return StrategyAdapter.STRATEGIES[name]
+    
+
+    
+    @staticmethod
+    def get_strategy_info(name: str):
+        """
+        Returns a dict: {'class': <StrategyClass>, 'type': 'backtrader'|'python'}
+        Raises ValueError if not found.
+        """
+        info = StrategyAdapter.STRATEGIES.get(name)
+        if not info:
+            raise ValueError(
+                f"Strategy '{name}' not found. "
+                f"Available: {list(StrategyAdapter.STRATEGIES.keys())}"
+            )
+        return info
+
+
+
+
 
     def __init__(self, approach='backtrader', execution_engine=None):
         """

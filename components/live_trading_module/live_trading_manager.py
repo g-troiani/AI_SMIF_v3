@@ -6,6 +6,7 @@ import time
 import sqlite3
 from datetime import datetime, timedelta
 import pytz
+import backtrader as bt  # ADDED for 'cerebro' usage
 
 from components.data_management_module.config import UnifiedConfigLoader, config
 from components.backtesting_module.strategy_adapters import StrategyAdapter
@@ -131,7 +132,7 @@ class LiveTradingManager:
 
     def __init__(self, strategy_name):
         self.logger = logging.getLogger('LiveTradingManager')
-        self.strategy_name = strategy_name
+        self.strategy_name = strategy_name  # store it for reference
 
         self.use_alpaca = UnifiedConfigLoader.use_alpaca_store()
         self.symbols = self._load_symbols()  # In a real scenario, strategies have defined symbols
@@ -146,6 +147,14 @@ class LiveTradingManager:
         self.live_strategies = []
         self.execution_engine = None
         self.aggregator = None
+
+        # Fix for the 'AttributeError: no attribute _timeframe':
+        self._timeframe = '5Min'  # or replaced later if needed
+
+        # ----------------------------------
+        # NEW: We'll keep a reference to a single "live" Cerebro 
+        self._bt_cerebro = None   # <-- ADDED
+        # ----------------------------------
 
         # Check if this strategy was live previously (persisted in DB).
         # If so, we set up a small flag so we automatically resume if not forcibly stopped.
@@ -178,15 +187,17 @@ class LiveTradingManager:
 
     def _load_live_strategies(self):
         """
-        Load strategies from DB where mode='live', create the instance, 
-        and store them in self.live_strategies.
-        This snippet also attempts to load a 'tickers' column if present.
+        Load strategies from DB where mode='live'.
+        
+        If a strategy is marked as type='backtrader', we add it to self._bt_cerebro.
+        If a strategy is type='python', we instantiate the class directly and store 
+        it in self.live_strategies. This allows both Cerebro-based and pure-Python 
+        strategies to run side by side without the '_NoneType' object has no attribute 
+        '_next_stid' error for backtrader.
         """
         conn = sqlite3.connect(str(DB_PATH))
         cur = conn.cursor()
-        
-        # First try selecting tickers if that column exists.
-        # If your table doesn't have "tickers," the except block falls back:
+
         try:
             rows = cur.execute("""
                 SELECT name, timeframe, tickers
@@ -195,91 +206,113 @@ class LiveTradingManager:
             """).fetchall()
             has_tickers = True
         except sqlite3.OperationalError:
-            # 'tickers' column not found, fallback to old query
             rows = cur.execute("""
                 SELECT name, timeframe
                 FROM strategies
                 WHERE mode='live'
             """).fetchall()
             has_tickers = False
-        
+
         conn.close()
 
-        strategies = []
+        strategies_loaded = []
         for row in rows:
             if has_tickers:
-                # row = (strat_name, timeframe, tickers_str)
                 (strat_name, timeframe, tickers_str) = row
             else:
-                # row = (strat_name, timeframe)
                 (strat_name, timeframe) = row
-                tickers_str = None  # no column in DB
+                tickers_str = None
 
-            if strat_name in StrategyAdapter.STRATEGIES:
-                strat_cls = StrategyAdapter.STRATEGIES[strat_name]
-                strat_obj = strat_cls()  # or pass in additional params if needed
+            # Ensure the strategy_name is in StrategyAdapter
+            if strat_name not in StrategyAdapter.STRATEGIES:
+                continue
 
-                # If we found a tickers column, parse it (e.g. JSON or comma-separated).
-                if tickers_str:
-                    # Attempt to parse JSON; if it fails, fallback
-                    try:
-                        import json
-                        parsed_tickers = json.loads(tickers_str)
-                        setattr(strat_obj, 'tickers', parsed_tickers)
-                    except (json.JSONDecodeError, TypeError):
-                        # fallback if stored as e.g. "AAPL,TSLA" string
-                        parsed_tickers = [x.strip() for x in tickers_str.split(',')]
-                        setattr(strat_obj, 'tickers', parsed_tickers)
+            # Expect each entry: { 'class': MyStrategyClass, 'type': 'backtrader' or 'python' }
+            strat_info = StrategyAdapter.STRATEGIES[strat_name]
+            s_class = strat_info['class']
+            s_type  = strat_info.get('type', 'python')  # default to 'python'
 
-                # Also attach the timeframe to the strategy object
+            # Parse tickers, if present
+            if tickers_str:
+                try:
+                    import json
+                    parsed_tickers = json.loads(tickers_str)
+                except (json.JSONDecodeError, TypeError):
+                    parsed_tickers = [x.strip() for x in tickers_str.split(',')]
+            else:
+                parsed_tickers = []
+
+            # If it's a backtrader-based strategy, add it to Cerebro
+            if s_type == 'backtrader':
+                if self._bt_cerebro is None:
+                    self._bt_cerebro = bt.Cerebro()
+
+                # For simplicity, add the strategy class with no additional params
+                self._bt_cerebro.addstrategy(s_class)
+
+                # Just track it in the list as a dict
+                strategies_loaded.append({
+                    'name': strat_name,
+                    'type': 'backtrader'
+                })
+            else:
+                # 'python' approach => direct instantiation
+                strat_obj = s_class()
+                setattr(strat_obj, 'tickers', parsed_tickers)
                 setattr(strat_obj, 'live_timeframe', timeframe or '1Min')
-                strategies.append(strat_obj)
+                strategies_loaded.append(strat_obj)
 
-        self.live_strategies = strategies
-        logger.info(f"Loaded {len(strategies)} live strategies")
+        self.live_strategies = strategies_loaded
+        self.logger.info(f"Loaded {len(strategies_loaded)} live strategies")
 
 
-def _on_bar(self, bar):
-    """
-    Called when a final bar is available (aggregated or direct).
-    Original extended fallback and logs are still here.
-    """
-    # Out-of-order fallback
-    if not hasattr(self, '_last_bar_time'):
-        self._last_bar_time = None
-    if self._last_bar_time and bar.timestamp < self._last_bar_time:
-        self.logger.warning(
-            f"[on_bar fallback] Out-of-order bar => discarding. "
-            f"Bar time={bar.timestamp}, last_bar_time={self._last_bar_time}"
+
+    def _on_bar(self, bar):
+        """
+        Called when a final bar is available (aggregated or direct).
+        If the strategy is pure-Python, calls on_bar(...).
+        If the strategy is backtrader, we skip direct calls because Cerebro handles it.
+        """
+        if not hasattr(self, '_last_bar_time'):
+            self._last_bar_time = None
+        if self._last_bar_time and bar.timestamp < self._last_bar_time:
+            self.logger.warning(
+                f"[on_bar fallback] Out-of-order bar => discarding. "
+                f"Bar time={bar.timestamp}, last_bar_time={self._last_bar_time}"
+            )
+            return
+        self._last_bar_time = bar.timestamp
+
+        self.logger.debug(f"[on_bar] {bar}")
+
+        for strategy in self.live_strategies:
+            # Skip direct calls if the strategy is a backtrader dict
+            if isinstance(strategy, dict) and strategy.get('type') == 'backtrader':
+                continue
+
+            # Otherwise, it's a python-based strategy instance
+            if getattr(strategy, 'enabled', True) is False:
+                self.logger.debug(f"Skipping disabled strategy: {strategy.__class__.__name__}")
+                continue
+
+            signal = strategy.on_bar(bar)
+            if signal:
+                self.logger.info(f"Strategy {strategy.__class__.__name__} => trade {signal}")
+                if self.execution_engine:
+                    self.execution_engine.add_trade_signal(signal)
+
+        # Always store the bar in DB
+        self.db.save_market_data_point(
+            symbol=bar.symbol,
+            timestamp=bar.timestamp,
+            o=bar.open,
+            h=bar.high,
+            l=bar.low,
+            c=bar.close,
+            v=bar.volume
         )
-        return
-    self._last_bar_time = bar.timestamp
 
-    # Possibly log the bar for debugging
-    self.logger.debug(f"[on_bar] {bar}")
 
-    # If you have 'enabled' or 'paused' flags on strategies, keep them:
-    for strategy in self.live_strategies:
-        if getattr(strategy, 'enabled', True) is False:
-            self.logger.debug(f"Skipping disabled strategy: {strategy.__class__.__name__}")
-            continue
-
-        signal = strategy.on_bar(bar)
-        if signal:
-            self.logger.info(f"Strategy {strategy.__class__.__name__} => trade {signal}")
-            if self.execution_engine:
-                self.execution_engine.add_trade_signal(signal)
-
-    # Store the entire bar in DB with all fields:
-    self.db.save_market_data_point(
-        symbol=bar.symbol,
-        timestamp=bar.timestamp,
-        o=bar.open,
-        h=bar.high,
-        l=bar.low,
-        c=bar.close,
-        v=bar.volume
-    )
 
 
 
@@ -419,16 +452,22 @@ def _on_bar(self, bar):
         Called when a new bar arrives from the aggregator or direct Alpaca stream.
 
         'bar' is assumed to have:
-            - bar.symbol
-            - bar.close
-            - bar.timestamp
-            - (possibly bar.open, bar.high, bar.low, bar.volume, etc.)
+        - bar.symbol
+        - bar.open, bar.high, bar.low, bar.close, bar.volume
+        - bar.timestamp (a datetime or a string that can be parsed)
 
-        We pass the bar to each live strategy that:
-        1) has no fixed ticker list, or
-        2) includes this symbol in its ticker list.
+        Typical usage: ZeroMQ or Alpaca aggregator calls this when a bar is finalized.
+        We then pass it to our live strategies.
 
-        If strategy.on_bar(bar) produces a TradeSignal, we queue it in the ExecutionEngine.
+        Steps:
+        1) Debug log the bar’s arrival.
+        2) For each strategy in self.live_strategies:
+            - If the strategy uses a 'tickers' attribute, ensure bar.symbol is in that list.
+            - If the strategy is a Backtrader-based approach, we skip direct on_bar calls;
+            Cerebro handles them. (Ensures no _next_stid error.)
+            - Otherwise, call on_bar(...) for pure-Python strategies.
+        3) If the strategy returns a TradeSignal, we forward it to the ExecutionEngine.
+        4) Handle and log any exceptions.
         """
         try:
             # Debug-log the bar’s arrival
@@ -439,6 +478,12 @@ def _on_bar(self, bar):
             # For each strategy in our live_strategies array
             for strategy in self.live_strategies:
 
+                # If the strategy is a dictionary with type='backtrader', we skip direct calls
+                if isinstance(strategy, dict) and strategy.get('type') == 'backtrader':
+                    # This ensures we avoid the "NoneType" error with backtrader code.
+                    continue
+
+                # Otherwise, this is a pure-Python strategy object
                 # If strategy has a 'tickers' attribute, only proceed if bar.symbol is in that list
                 if not hasattr(strategy, 'tickers') or (bar.symbol in strategy.tickers):
                     # Let the strategy process the bar
@@ -449,88 +494,14 @@ def _on_bar(self, bar):
                         self.logger.info(
                             f"Strategy {strategy.__class__.__name__} produced signal: {trade_signal}"
                         )
-                        # Forward that signal to the execution engine
+                        # Forward that signal to the execution engine if present
                         if self.execution_engine:
                             self.execution_engine.add_trade_signal(trade_signal)
 
         except Exception as e:
             self.logger.error(f"Error in _handle_incoming_bar: {e}")
 
-
-
-
-        # def handle_incoming_bar(bar_data):
-        #     # This is the raw 1Min bar. If aggregator is set, pass it. Otherwise direct:
-        #     bar_obj = Bar(bar_data.symbol, bar_data.close[0], bar_data.datetime[0])
-        #     if self.aggregator:
-        #         new_bar = self.aggregator.process(bar_obj)
-        #         if new_bar:
-        #             self._on_bar(new_bar)
-        #     else:
-        #         self._on_bar(bar_obj)
-
-        # self.streamer = AlpacaStoreStreamer(
-        #     symbols=symbols,
-        #     timeframe=timeframe,
-        #     on_bar_callback=handle_incoming_bar
-        # )
-        # self.streamer.start()
-
-    # def start(self, force_live=False):
-    #     """
-    #     Unified start() that merges code1's fallback logic, data fetch, 
-    #     plus code2's aggregator & strategy setup.
-    #     If force_live=True, we forcibly mark this strategy as live in the DB
-    #     even if it wasn't before. Otherwise, if auto_resume is True or if 
-    #     the user calls start() manually, we proceed.
-    #     """
-    #     # From code1
-    #     if not force_live and not self.auto_resume:
-    #         self.logger.info(
-    #             f"Strategy '{self.strategy_name}' is not flagged as live. "
-    #             f"Call start(force_live=True) if you want to forcibly make it live."
-    #         )
-    #         return
-
-    #     self.db.set_strategy_live(self.strategy_name, True)
-    #     self._running = True
-    #     self.logger.info(f"Starting LiveTradingManager for {self.strategy_name}, use_alpaca={self.use_alpaca}")
-
-    #     # From code2: set up execution engine and load live strategies
-    #     self._setup_execution_engine()
-    #     self._load_live_strategies()
-
-    #     # Attempt to fill data gap if any (from code1)
-    #     self._fetch_missed_data()
-
-    #     # Check aggregator usage from code2
-    #     aggregator_enabled = config.enable_aggregator()
-    #     if aggregator_enabled:
-    #         self.aggregator = SimpleAggregator(target_interval=5)
-    #         # For aggregator usage, we call code2's _start_alpaca_stream() if Alpaca is enabled
-    #         # but still keep code1 fallback logic if needed.
-    #         if self.use_alpaca:
-    #             self.logger.info(f"Trying aggregator-based AlpacaStoreStreamer for '{self.strategy_name}'...")
-    #             try:
-    #                 self._start_alpaca_stream('1Min')
-    #             except Exception as e:
-    #                 self.logger.warning(f"AlpacaStore failed: {str(e)}, falling back to ZeroMQ")
-    #                 self._start_zeromq_fallback()
-    #         else:
-    #             self.logger.info(f"Alpaca store not enabled for '{self.strategy_name}'. Using ZeroMQ fallback directly.")
-    #             self._start_zeromq_fallback()
-    #     else:
-    #         # If aggregator not enabled, run code1’s original fallback approach:
-    #         if self.use_alpaca:
-    #             self.logger.info(f"Trying AlpacaStoreStreamer first for '{self.strategy_name}'...")
-    #             try:
-    #                 self._start_alpaca_streamer()
-    #             except Exception as e:
-    #                 self.logger.warning(f"AlpacaStore failed: {str(e)}, falling back to ZeroMQ")
-    #                 self._start_zeromq_fallback()
-    #         else:
-    #             self.logger.info(f"Alpaca store not enabled for '{self.strategy_name}'. Using ZeroMQ fallback directly.")
-    #             self._start_zeromq_fallback()
+            
     
     def start(self, force_live=False):
         """
@@ -545,7 +516,11 @@ def _on_bar(self, bar):
         5) Log final success.
         """
 
+        self.logger.warning(f"[DEBUG] LiveTradingManager.start() called for {self.strategy_name}, force={force_live}")
+
         # Check if DB says is_live; if so, we proceed even if auto_resume==False
+        self.logger.warning(f"[DEBUG] LiveTradingManager.start() for {self.strategy_name} => setting up engine, aggregator, etc.")
+        self._setup_execution_engine()
         is_live_in_db = self.db.is_strategy_live(self.strategy_name)
 
         if not force_live and not self.auto_resume and not is_live_in_db:
@@ -574,8 +549,18 @@ def _on_bar(self, bar):
         # 3) Attempt to fetch any missed data from last known timestamp
         self._fetch_missed_data()
 
+        # Check if any strategy is marked "backtrader" to skip aggregator if needed
+        any_backtrader = False
+        for s in self.live_strategies:
+            # For example, we can treat a dict-based config with "type" == "backtrader"
+            # or any other marker that your code uses to identify a backtrader-based approach
+            if isinstance(s, dict) and s.get('type') == 'backtrader':
+                any_backtrader = True
+                break
+
         # 4) Aggregator logic vs. fallback
-        if aggregator_enabled:
+        # If aggregator is enabled, but we found backtrader-based strategies, skip aggregator to avoid conflicts
+        if aggregator_enabled and not any_backtrader:
             # Possibly map timeframe => aggregator chunk size
             t_map = {
                 '1Min': 1,
@@ -604,7 +589,7 @@ def _on_bar(self, bar):
                 self._start_zeromq_fallback()
 
         else:
-            # If aggregator is not enabled, do direct approach
+            # If aggregator is not enabled OR we found a backtrader-based strategy => do direct approach
             self.logger.info("No aggregator => direct streaming approach.")
             if self.use_alpaca:
                 try:
@@ -618,6 +603,8 @@ def _on_bar(self, bar):
 
         # 5) Final success
         self.logger.debug("[start] done setting up live streaming. Now running in background.")
+
+
 
 
 
@@ -686,3 +673,5 @@ def _on_bar(self, bar):
         """
         self.stop()
         self.start(force_live=True)  # forcing live to keep it consistent with code1 logic
+
+

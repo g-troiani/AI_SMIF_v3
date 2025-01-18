@@ -152,6 +152,7 @@ class ExecutionEngine:
         (From code2)
         Starts the ExecutionEngine in a background thread.
         """
+        self.logger.warning("[DEBUG] ExecutionEngine.start() called. Setting up event loop ...")
         if self._thread is not None and self._thread.is_alive():
             self.logger.info("ExecutionEngine is already running.")
             return
@@ -307,6 +308,7 @@ class ExecutionEngine:
         (From code2)
         Places the order asynchronously using Alpaca's API, logs it, and tracks it in _active_orders.
         """
+        self.logger.warning(f"[DEBUG] place_order called for {trade_signal}")
         self.logger.info(f"Placing order for trade_signal: {trade_signal}")
         start_time = datetime.now()
 
@@ -326,6 +328,7 @@ class ExecutionEngine:
 
         try:
             order = await self.alpaca_client.place_order_async(order_params)
+            self.logger.warning(f"[DEBUG] Alpaca responded with order id={order.get('id')}")
             exec_time = (datetime.now() - start_time).total_seconds()
             self.logger.info(f"Order placed: {order} (time: {exec_time:.3f}s)")
             order['execution_time'] = exec_time
