@@ -1034,7 +1034,7 @@ def update_strategy(strategy_name):
 
 @app.route('/api/data-management/status')
 def data_management_status():
-    # example: read from a global or your data manager’s state
+    # example: read from a global or your data manager's state
     return jsonify({
         'success': True,
         'data': {
@@ -1050,7 +1050,7 @@ def data_management_status():
 
 if __name__ == '__main__':
     initialize_app()
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5001, debug=True)
 else:
     # Initialize the app when imported as a module
     initialize_app()

@@ -39,7 +39,7 @@ def test_alpaca_metrics():
         
         # 2. Test our Flask endpoint
         print("\n2. Testing Flask Dashboard Endpoint:")
-        flask_response = requests.get("http://localhost:5000/api/dashboard-data")
+        flask_response = requests.get("http://localhost:5001/api/dashboard-data")
         flask_response.raise_for_status()
         flask_data = flask_response.json()
         
