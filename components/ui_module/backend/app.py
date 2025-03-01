@@ -19,16 +19,20 @@ from flask import jsonify
 import pytz
 import sqlite3
 
-
-
+# Add the project root to the Python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.abspath(os.path.join(current_dir, '..', '..', '..'))
+project_root = os.path.abspath(os.path.join(current_dir, "../../.."))
+sys.path.append(project_root)
 
-# Insert the project_root at the start of sys.path
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+# Now import the actual Backtester class
+from components.backtesting_module.backtester import Backtester
 
-    
+# Set up logging
+logging.basicConfig(
+    filename='backend_app.log',
+    level=logging.DEBUG,
+    format='%(asctime)s %(levelname)s: %(message)s'
+)
 
 # Configure logging with more detailed formatting
 logging.basicConfig(
@@ -147,6 +151,10 @@ def log_request_info(request):
     - Body: {request.get_data()}
     """)
 
+@app.before_request
+def log_request():
+    logging.info(f"Request: {request.method} {request.path}")
+
 @app.route('/api/tickers', methods=['GET'])
 def get_tickers():
     """Endpoint to get list of tickers"""
@@ -238,10 +246,11 @@ def not_found(error):
     }), 404
 
 @app.errorhandler(500)
-def internal_error(error):
+def handle_500_error(e):
+    logging.error(f"Internal Server Error: {str(e)}")
     return jsonify({
-        'success': False,
-        'message': 'Internal server error'
+        "success": False,
+        "message": "Internal server error occurred"
     }), 500
 
 
@@ -762,91 +771,32 @@ def get_available_strategies():
 
 @app.route('/api/backtest/run', methods=['POST'])
 def run_backtest():
-    from components.backtesting_module.backtester import Backtester
-    data = request.get_json()
-    strategy_name = data.get('strategy')
-    symbol = data.get('symbol')
-    start_date = data.get('start_date')
-    end_date = data.get('end_date')
-    timeframe     = data.get('timeframe', '1Min')  # default to 1Min if not provided
-    # Optional parameters
-    stop_loss = data.get('stop_loss')
-    take_profit = data.get('take_profit')
-
     try:
-        start_dt = pd.to_datetime(start_date)
-        end_dt = pd.to_datetime(end_date)
-
-        # If strategy parameters are passed, extract them:
-        # strategy_params = data.get('strategy_params', {})
-        strategy_params = {}  # For now, empty or fill as needed.
-
-        backtester = Backtester(
-            strategy_name=strategy_name,
-            strategy_params=strategy_params,
-            ticker=symbol,
-            start_date=start_dt,
-            end_date=end_dt,
-            db_path=os.path.join(project_root, 'data', 'market_data.db'),
-            stop_loss=stop_loss,
-            take_profit=take_profit
+        logging.info("Backtest request received")
+        data = request.json
+        logging.info(f"Request data: {data}")
+        
+        # Create a real backtester instance
+        backtester = Backtester()
+        
+        # Run backtest with data from request
+        result = backtester.run_backtest(
+            strategy=data.get('strategy'),
+            symbol=data.get('symbol'),
+            start_date=data.get('start_date'),
+            end_date=data.get('end_date'),
+            stop_loss=data.get('stop_loss'),
+            take_profit=data.get('take_profit'),
+            timeframe=data.get('timeframe', '1d')
         )
-        backtester.run_backtest()
-
-        # Retrieve the metrics we just saved from the database
-        conn = sqlite3.connect(os.path.join(project_root, 'data', 'backtesting_results.db'))
-        cursor = conn.cursor()
-
-        # Get the most recent backtest record for this strategy/ticker/date combination
-        cursor.execute('''
-            SELECT strategy_name, ticker, start_date, end_date, cagr, total_pct_change, std_dev, annual_vol, sharpe_ratio,
-                   sortino_ratio, max_drawdown, win_rate, num_trades, information_ratio, strategy_unique_id
-            FROM backtest_summary
-            WHERE strategy_name = ? AND ticker = ? AND start_date = ? AND end_date = ?
-            ORDER BY id DESC LIMIT 1
-        ''', (strategy_name, symbol, start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S')))
-        row = cursor.fetchone()
-        conn.close()
-
-        if row:
-            # Extract metrics
-            metrics = {
-                'strategy_name': row[0],
-                'ticker': row[1],
-                'start_date': row[2],
-                'end_date': row[3],
-                'cagr': row[4],
-                'total_return_pct': row[5],
-                'std_dev': row[6],
-                'annual_vol': row[7],
-                'sharpe_ratio': row[8],
-                'sortino_ratio': row[9],
-                'max_drawdown': row[10],
-                'win_rate': row[11],
-                'num_trades': row[12],
-                'information_ratio': row[13],
-                'strategy_unique_id': row[14]
-            }
-        else:
-            metrics = None
-
-        # Return the plot_url if we have it
-        plot_filename = getattr(backtester, 'plot_filename', None)
-        plot_url = None
-        if plot_filename:
-            plot_url = '/' + plot_filename.replace('\\', '/').lstrip('/')
-
-        return jsonify({
-            'success': True,
-            'message': 'Backtest completed successfully',
-            'plot_url': plot_url,
-            'metrics': metrics  # Return the metrics we just fetched
-        })
-
+        
+        return jsonify(result)
+        
     except Exception as e:
+        logging.error(f"Backtest error: {str(e)}", exc_info=True)
         return jsonify({
             'success': False,
-            'message': str(e)
+            'message': f'Server error: {str(e)}'
         }), 500
 
 

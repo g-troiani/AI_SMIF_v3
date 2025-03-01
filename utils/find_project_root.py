@@ -2,7 +2,7 @@
 
 import os
 
-def find_project_root(starting_dir, target_folder_name='ai_smif_v3'):
+def find_project_root(starting_dir, target_folder_name='ai_finance'): #ai_smif_v3'):
     current_dir = starting_dir
     while True:
         if os.path.basename(current_dir) == target_folder_name:

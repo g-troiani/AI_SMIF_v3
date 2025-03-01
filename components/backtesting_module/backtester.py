@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = find_project_root(current_dir, target_folder_name='ai_smif_v3')# print(f"current_dir resolved to: {current_dir}")  
+project_root = find_project_root(current_dir, target_folder_name= 'ai_finance') # ai_smif_v3')# print(f"current_dir resolved to: {current_dir}")  
 # print(f"project_root resolved to: {project_root}")  
 logging.debug(f"Resolved project_root: {project_root}")
 
