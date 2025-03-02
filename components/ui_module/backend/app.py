@@ -1,6 +1,6 @@
 # File: components/ui_module/backend/app.py
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 import os
 import sys
@@ -18,6 +18,7 @@ import requests
 from flask import jsonify
 import pytz
 import sqlite3
+import uuid
 
 # Add the project root to the Python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -993,6 +994,24 @@ def data_management_status():
             'streamStatus': 'Active'
         }
     })
+
+# Add this route to serve the plot files
+@app.route('/plots/<path:filename>')
+def serve_plots(filename):
+    """Serve plot files from the plots directory"""
+    # Use app.root_path to ensure we're looking in the right location
+    plots_dir = os.path.join(app.root_path, 'plots')
+    
+    # Ensure the directory exists
+    os.makedirs(plots_dir, exist_ok=True)
+    
+    # Debug logs to help troubleshoot
+    print(f"Request for plot: {filename}")
+    print(f"Looking in: {plots_dir}")
+    print(f"Full path: {os.path.join(plots_dir, filename)}")
+    print(f"File exists: {os.path.exists(os.path.join(plots_dir, filename))}")
+    
+    return send_from_directory(plots_dir, filename)
 
 
 

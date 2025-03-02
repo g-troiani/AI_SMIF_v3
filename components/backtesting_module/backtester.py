@@ -23,6 +23,9 @@ plt.rcParams['figure.figsize'] = (12, 6)
 plt.style.use('ggplot')  # a nice built-in style if you want a pretty look
 from utils.find_project_root import find_project_root
 import uuid
+import io
+import base64
+from flask import current_app
 
 # from components.data_management_module.config import UnifiedConfigLoader
 # If suggestion #2 introduced a unified config approach for offline usage,
@@ -49,15 +52,12 @@ logging.basicConfig(
 logging.debug(f"Determined project_root as: {project_root}")
 
 
-plots_dir = os.path.join(project_root, 'plots')
-logging.debug(f"Data plots directory: {plots_dir}")
+# Get path to Flask app root directory
+app_root = current_app.root_path if current_app else os.path.join(os.path.dirname(__file__), '../ui_module/backend')
 
-if not os.path.exists(plots_dir):
-    try:
-        os.makedirs(plots_dir)
-        logging.debug(f"Created directory {plots_dir}")
-    except Exception as e:
-        logging.error(f"Error creating {plots_dir}: {e}")
+# Create plots directory in the app root
+plots_dir = os.path.join(app_root, 'plots')
+os.makedirs(plots_dir, exist_ok=True)
 
 
 class AllInSizer(bt.Sizer):
@@ -185,13 +185,10 @@ class Backtester:
 
     def run_backtest(self):
         try:
-            # Set matplotlib to use non-GUI backend
+            # Must set Agg backend before importing pyplot
             import matplotlib
             matplotlib.use('Agg')
-            
-            # Completely disable interactive mode
             import matplotlib.pyplot as plt
-            plt.ioff()
             
             logger.info(
             f"Running backtest for {self.ticker} from {self.start_date} to {self.end_date}, "
@@ -331,16 +328,15 @@ class Backtester:
             )
             logging.debug("Results saved to DB successfully.")
 
-            # Create plot directory if it doesn't exist
-            plot_dir = os.path.join('static', 'plots')
-            os.makedirs(plot_dir, exist_ok=True)
+            # Create directory for plots if it doesn't exist
+            static_dir = os.path.join('components', 'ui_module', 'backend', 'static', 'plots')
+            os.makedirs(static_dir, exist_ok=True)
             
             # Generate unique filename
-            plot_filename = f"backtest_{uuid.uuid4().hex[:8]}.png"
-            plot_path = os.path.join(plot_dir, plot_filename)
+            plot_filename = f"backtest_{self.ticker}_{uuid.uuid4().hex[:8]}.png"
+            plot_path = os.path.join(static_dir, plot_filename)
             
-            # Instead of using cerebro.plot(), manually create and save the figure
-            # This avoids any GUI window creation that might occur in Backtrader's plotting
+            # Save figure to file and close it
             fig = plt.figure(figsize=(10, 6))
             ax = fig.add_subplot(111)
             
@@ -356,13 +352,17 @@ class Backtester:
                 ax.set_ylabel('Price')
                 ax.legend()
             
-            # Save the figure and close it properly
             fig.savefig(plot_path)
             plt.close(fig)
             
-            # Return the URL to the saved plot
-            plot_url = f"/static/plots/{plot_filename}"
+            # Debug logs
+            print(f"Plot saved to: {plot_path}")
+            print(f"File exists: {os.path.exists(plot_path)}")
             
+            # Return the URL matching the Flask route
+            plot_url = f"http://localhost:5001/plots/{plot_filename}"
+            
+            # Return with proper URL
             return {
                 'success': True,
                 'plot_url': plot_url,
