@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 plt.rcParams['figure.figsize'] = (12, 6)
 plt.style.use('ggplot')  # a nice built-in style if you want a pretty look
 from utils.find_project_root import find_project_root
+import uuid
 
 # from components.data_management_module.config import UnifiedConfigLoader
 # If suggestion #2 introduced a unified config approach for offline usage,
@@ -182,15 +183,22 @@ class Backtester:
         print(f"Date Range for the test: {self.start_date} to {self.end_date}")
         print(f"Total bars: {len(self.data)}")
 
-    def run_backtest(self, cash=100000.0, commission=0.0):
-        
-        logger.info(
-        f"Running backtest for {self.ticker} from {self.start_date} to {self.end_date}, "
-        f"strategy={self.strategy_name}"
-        )
-        
-        self.logger.debug("Starting run_backtest method...")
+    def run_backtest(self):
         try:
+            # Set matplotlib to use non-GUI backend
+            import matplotlib
+            matplotlib.use('Agg')
+            
+            # Completely disable interactive mode
+            import matplotlib.pyplot as plt
+            plt.ioff()
+            
+            logger.info(
+            f"Running backtest for {self.ticker} from {self.start_date} to {self.end_date}, "
+            f"strategy={self.strategy_name}"
+            )
+            
+            self.logger.debug("Starting run_backtest method...")
             self.load_data()
             logging.debug("Data loaded successfully. Validating data...")
             validate_backtest_data(self.data)
@@ -206,15 +214,24 @@ class Backtester:
             cerebro.adddata(data_feed)
 
             strategy_class = StrategyAdapter.get_strategy(self.strategy_name)
-            cerebro.addstrategy(strategy_class,
-                                stop_loss=self.stop_loss,
-                                take_profit=self.take_profit,
-                                **self.strategy_params
-                                )
+            
+            # Make a copy of strategy_params to avoid modifying the original
+            strategy_params_copy = self.strategy_params.copy()
+            
+            # Remove parameters that the strategy doesn't accept
+            if 'start_date' in strategy_params_copy:
+                strategy_params_copy.pop('start_date')
+            if 'end_date' in strategy_params_copy:
+                strategy_params_copy.pop('end_date')
+            if 'timeframe' in strategy_params_copy:
+                strategy_params_copy.pop('timeframe')
+            
+            # Add the strategy with the filtered parameters
+            cerebro.addstrategy(strategy_class, **strategy_params_copy)
 
             cerebro.addsizer(bt.sizers.PercentSizer, percents=self.percent_invest)
-            cerebro.broker.setcash(cash)
-            cerebro.broker.setcommission(commission=commission)
+            cerebro.broker.setcash(100000.0)
+            cerebro.broker.setcommission(commission=0.0)
             cerebro.broker.set_slippage_perc(0.0)
 
             # Add analyzers
@@ -227,13 +244,13 @@ class Backtester:
             cerebro.addanalyzer(bt.analyzers.SQN, _name='sqn')
 
             logging.debug("Running cerebro...")
-            self.results = cerebro.run()
+            results = cerebro.run()
             self.final_value = cerebro.broker.getvalue()
             logging.debug(f"Cerebro run completed. Final portfolio value: {self.final_value}")
 
             # Extract analyzer results
             logging.debug("Extracting analyzer results...")
-            analyzer = self.results[0].analyzers
+            analyzer = results[0].analyzers
             returns_analysis = analyzer.returns.get_analysis()
             sharpe_analysis = analyzer.sharpe.get_analysis()
             drawdown_analysis = analyzer.drawdown.get_analysis()
@@ -244,7 +261,7 @@ class Backtester:
 
             total_return = returns_analysis['rtot']
             total_pct_change = total_return * 100.0
-            initial_cash = cash
+            initial_cash = 100000.0
             total_pl = self.final_value - initial_cash
 
             days = (self.end_date - self.start_date).days
@@ -270,7 +287,7 @@ class Backtester:
             win_rate = (won_trades / total_trades * 100.0) if total_trades > 0 else None
 
             benchmark_ticker = BacktestConfig.BENCHMARK_TICKER
-            benchmark_metrics = self.run_benchmark(benchmark_ticker, cash=cash, commission=commission)
+            benchmark_metrics = self.run_benchmark(benchmark_ticker)
             benchmark_return = benchmark_metrics['Total Return']
 
             alpha = (total_return - benchmark_return) * 100.0
@@ -314,34 +331,59 @@ class Backtester:
             )
             logging.debug("Results saved to DB successfully.")
 
-            logging.debug("Attempting to plot results...")
-            figs = cerebro.plot(style='candle', barup='green', bardown='red', volume=False, show=False)
-            fig = figs[0][0]
-            fig.suptitle(f"Backtest Result - {self.strategy_name} on {self.ticker}", fontsize=16, fontweight='bold')
-
-            try:
-                final_plot_filename = os.path.join(
-                    plots_dir,
-                    f"backtest_plot_{self.strategy_name}_{self.ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-                )
-                logging.debug(f"Saving final plot to {final_plot_filename}")
-                fig.savefig(final_plot_filename, dpi=300, bbox_inches='tight')
-                logging.debug("Final plot saved successfully.")
-
-                plt.close(fig)
-                self.plot_filename = final_plot_filename
-
-                # Set the plot_url that the UI can use to access the image.
-                # Assuming your Flask app is configured to serve files under /plots/
-                self.plot_url = f"/plots/{os.path.basename(final_plot_filename)}"
-                logging.debug(f"Plot URL set to {self.plot_url}")
-
-            except Exception as e:
-                logging.error(f"Error saving plot files: {e}", exc_info=True)
+            # Create plot directory if it doesn't exist
+            plot_dir = os.path.join('static', 'plots')
+            os.makedirs(plot_dir, exist_ok=True)
+            
+            # Generate unique filename
+            plot_filename = f"backtest_{uuid.uuid4().hex[:8]}.png"
+            plot_path = os.path.join(plot_dir, plot_filename)
+            
+            # Instead of using cerebro.plot(), manually create and save the figure
+            # This avoids any GUI window creation that might occur in Backtrader's plotting
+            fig = plt.figure(figsize=(10, 6))
+            ax = fig.add_subplot(111)
+            
+            # Plot the data using simple matplotlib commands
+            # This example just plots close prices - adjust based on your data structure
+            if results and len(results) > 0:
+                strategy = results[0]
+                dates = [bt.num2date(x) for x in strategy.data.datetime.get(size=len(strategy.data))]
+                closes = strategy.data.close.get(size=len(strategy.data))
+                ax.plot(dates, closes, label='Close')
+                ax.set_title(f'Backtest for {self.ticker} using {self.strategy_name}')
+                ax.set_xlabel('Date')
+                ax.set_ylabel('Price')
+                ax.legend()
+            
+            # Save the figure and close it properly
+            fig.savefig(plot_path)
+            plt.close(fig)
+            
+            # Return the URL to the saved plot
+            plot_url = f"/static/plots/{plot_filename}"
+            
+            return {
+                'success': True,
+                'plot_url': plot_url,
+                'metrics': {
+                    'total_pl': total_pl,
+                    'total_pct_change': total_pct_change,
+                    'cagr': cagr,
+                    'total_return': total_return,
+                    'sharpe_ratio': sharpe_ratio,
+                    'sortino_ratio': sortino_ratio,
+                    'max_drawdown': max_drawdown,
+                    'win_rate': win_rate,
+                    'num_trades': total_trades,
+                    'information_ratio': information_ratio
+                } if results and len(results) > 0 else {}
+            }
 
         except Exception as e:
-            logging.error(f"Error during backtest: {e}", exc_info=True)
-            raise
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "message": str(e)}
 
     def save_results_to_db(self, strategy_name, strategy_params, ticker, start_date, end_date,
                            final_value, total_pl, total_pct_change, cagr, total_return,

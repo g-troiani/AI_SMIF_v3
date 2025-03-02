@@ -26,6 +26,7 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
   });
 
   const [isRunning, setIsRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -44,41 +45,45 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
     }
   }, [isOpen]);
 
-  const handleRunBacktest = () => {
-    setIsRunning(true);
-    const payload = {
-      strategy: formData.strategy,
-      symbol: formData.symbol,
-      start_date: formData.dateRange.start,
-      end_date: formData.dateRange.end,
-      stop_loss: formData.stopLoss ? parseFloat(formData.stopLoss) : null,
-      take_profit: formData.takeProfit ? parseFloat(formData.takeProfit) : null,
-      timeframe: formData.timeframe // <-- ADDED to payload
-    };
-
-    fetch('/api/backtest/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
-    .then(res => res.json())
-    .then(data => {
-      setIsRunning(false);
+  const handleRunBacktest = async () => {
+    try {
+      setIsRunning(true);
+      setError(null);
+      
+      const response = await fetch('http://localhost:5001/api/backtest/run', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          strategy_name: formData.strategy,
+          strategy_params: {
+            start_date: formData.dateRange.start,
+            end_date: formData.dateRange.end,
+            stop_loss: formData.stopLoss ? parseFloat(formData.stopLoss) : null,
+            take_profit: formData.takeProfit ? parseFloat(formData.takeProfit) : null,
+            timeframe: formData.timeframe
+          },
+          ticker: formData.symbol
+        })
+      });
+      
+      const data = await response.json();
       if (data.success) {
-        // If backtest completed successfully, call onBacktestComplete if provided
         if (onBacktestComplete) {
           onBacktestComplete(data.plot_url, data.metrics);
         }
-        // Close the modal automatically after success
         onClose();
       } else {
         console.error('Error running backtest:', data.message);
+        setError(data.message);
       }
-    })
-    .catch(err => {
+    } catch (error) {
+      console.error('Error running backtest:', error);
+      setError(`Error running backtest: ${error.message || 'Unknown error'}`);
+    } finally {
       setIsRunning(false);
-      console.error('Network error running backtest:', err);
-    });
+    }
   };
 
   if (!isOpen) return null;
@@ -98,6 +103,12 @@ const BacktestConfigModal: React.FC<BacktestConfigModalProps> = ({ isOpen, onClo
             <div className="text-center text-gray-700 mb-4">
               <span className="inline-block mr-2">Running backtest...</span>
               <div className="inline-block w-4 h-4 border-2 border-gray-300 border-t-transparent border-solid rounded-full animate-spin"></div>
+            </div>
+          )}
+
+          {error && (
+            <div className="text-center text-red-500 mb-4">
+              {error}
             </div>
           )}
 

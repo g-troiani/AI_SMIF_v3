@@ -772,32 +772,32 @@ def get_available_strategies():
 @app.route('/api/backtest/run', methods=['POST'])
 def run_backtest():
     try:
-        logging.info("Backtest request received")
-        data = request.json
-        logging.info(f"Request data: {data}")
+        data = request.get_json()
         
-        # Create a real backtester instance
-        backtester = Backtester()
+        # Extract the required parameters from the request data
+        strategy_name = data.get('strategy_name')
+        strategy_params = data.get('strategy_params', {})  # Get strategy_params with empty dict as default
+        ticker = data.get('ticker')
         
-        # Run backtest with data from request
-        result = backtester.run_backtest(
-            strategy=data.get('strategy'),
-            symbol=data.get('symbol'),
-            start_date=data.get('start_date'),
-            end_date=data.get('end_date'),
-            stop_loss=data.get('stop_loss'),
-            take_profit=data.get('take_profit'),
-            timeframe=data.get('timeframe', '1d')
+        # Validate the inputs
+        if not strategy_name or not ticker:
+            return jsonify({'error': 'Missing required parameters'}), 400
+        
+        # Create a Backtester instance with all required parameters
+        backtester = Backtester(
+            strategy_name=strategy_name,
+            strategy_params=strategy_params,  # Include the required strategy_params argument
+            ticker=ticker
         )
         
-        return jsonify(result)
+        # Run the backtest
+        result = backtester.run_backtest()
         
+        return jsonify(result)
     except Exception as e:
-        logging.error(f"Backtest error: {str(e)}", exc_info=True)
-        return jsonify({
-            'success': False,
-            'message': f'Server error: {str(e)}'
-        }), 500
+        logger.error(f"Backtest error: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 
 @app.route('/api/backtests', methods=['GET'])
